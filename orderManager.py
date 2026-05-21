@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from ib_insync import MarketOrder, LimitOrder, StopOrder, StopLimitOrder
+from ib_async import MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 log = logging.getLogger(__name__)
 

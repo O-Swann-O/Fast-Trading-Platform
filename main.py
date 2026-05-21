@@ -1,34 +1,63 @@
+import sys
 import asyncio
 import logging
 
+# --- Windows asyncio patch ---
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import config
 from brokerBoundary import BrokerBoundary
 from dataFeeder import DataFeeder
 from orderManager import OrderManager
 from stateManager import StateManager
+from sessionManager import SessionManager
+from riskGate import RiskGate
+from reconciler import Reconciler
+from accountManager import AccountManager
 
 log = logging.getLogger(__name__)
 
-state  = StateManager()
+state = StateManager()
 broker = BrokerBoundary()
 feeder = DataFeeder(broker.ib)
 orders = OrderManager(broker.ib)
+session = SessionManager(config.sessionStart, config.sessionEnd)
+reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
+account = AccountManager(broker.ib)
 
+gate = RiskGate(
+    stateManager     = state,
+    killSwitchActive = config.killSwitchActive,
+    maxOrderQty      = config.maxOrderQty,
+    maxPosition      = config.maxPosition,
+    minCash          = config.minCash
+)
 
 async def onConnected():
-    log.info("Connected.")
+    log.info("Broker Connected.")
+    await account.start()
     feeder.start()
     orders.start()
-
+    reconciler.start()
 
 async def onDisconnected():
-    log.info("Disconnected.")
-    feeder.stop()
+    log.info("Broker Disconnected.")
+    await orders.cancelAll()
     orders.stop()
+    feeder.stop()
+    reconciler.stop()
+    account.stop()
 
+async def onSessionStart():
+    log.info("Market session started. System is active.")
+
+async def onSessionEnd():
+    log.info("Market session ended. Halting system.")
+    await orders.cancelAll()
 
 def onTick(contractId, ticker):
     state.ticks[contractId] = ticker
-
 
 def onFill(contractId, action, qty, price):
     current = state.inventory.get(contractId, 0)
@@ -39,41 +68,57 @@ def onFill(contractId, action, qty, price):
         state.inventory[contractId] = current - qty
         state.cash += qty * price
 
-
 def onPartial(contractId, action, filledQty, avgPrice, remainingQty):
     log.warning("Partial fill — %s %s: filled %d, remaining %d", action, contractId, filledQty, remainingQty)
     onFill(contractId, action, filledQty, avgPrice)
 
-
 def onCancelled(contractId, orderId):
     log.warning("Order cancelled — contract %s order %s", contractId, orderId)
-
 
 def onRejected(contractId, orderId):
     log.error("Order rejected — contract %s order %s", contractId, orderId)
 
+def onDriftCorrected(driftType, asset, oldVal, newVal):
+    log.warning("Reconciler corrected %s for %s: %s -> %s", driftType, asset, oldVal, newVal)
 
-broker.onConnected    = onConnected
+def onAccountUpdate(tag, value):
+    if tag == "AvailableFunds":
+        log.info("Initial cash seeded: %.2f", value)
+        state.cash = value
+
+def onPositionUpdate(contractId, position):
+    if position != 0:
+        log.info("Initial position seeded: %s -> %d", contractId, position)
+        state.inventory[contractId] = position
+
+broker.onConnected = onConnected
 broker.onDisconnected = onDisconnected
-feeder.onTick         = onTick
-orders.onFill         = onFill
-orders.onPartial      = onPartial
-orders.onCancelled    = onCancelled
-orders.onRejected     = onRejected
+feeder.onTick = onTick
+orders.onFill = onFill
+orders.onPartial = onPartial
+orders.onCancelled = onCancelled
+orders.onRejected = onRejected
+session.onSessionStart = onSessionStart
+session.onSessionEnd = onSessionEnd
+reconciler.onDriftCorrected = onDriftCorrected
+account.onAccountUpdate = onAccountUpdate
+account.onPositionUpdate = onPositionUpdate
 
 
 async def main():
-    try:
-        await broker.run()
-    except KeyboardInterrupt:
-        orders.stop()
-        feeder.stop()
-        broker.stop()
+    session.start()
+    await broker.run()
 
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level  = logging.INFO,
-        format = "%(asctime)s %(levelname)s %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("System shutting down manually.")
+        session.stop()
+        reconciler.stop()
+        account.stop()

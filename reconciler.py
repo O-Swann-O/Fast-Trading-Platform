@@ -1,0 +1,69 @@
+import asyncio
+import logging
+
+log = logging.getLogger(__name__)
+
+
+class Reconciler:
+
+    def __init__(self, ib, stateManager, intervalSeconds: int = 300) -> None:
+        self._ib              = ib
+        self._state           = stateManager
+        self._interval        = intervalSeconds
+        self._running         = False
+        self.onDriftCorrected = None
+
+    def start(self) -> None:
+        if not self._running:
+            self._running = True
+            asyncio.create_task(self._auditLoop())
+
+    def stop(self) -> None:
+        self._running = False
+
+    async def _auditLoop(self) -> None:
+        while self._running:
+            await asyncio.sleep(self._interval)
+            try:
+                self._reconcile()
+            except Exception as e:
+                log.error("Reconciler failed during audit: %s", e)
+
+    def _reconcile(self) -> None:
+        driftFound = False
+
+        brokerPositions = {p.contract.conId: int(p.position) for p in self._ib.positions() if p.contract}
+        
+        for contractId, internalQty in list(self._state.inventory.items()):
+            trueQty = brokerPositions.get(contractId, 0)
+            if internalQty != trueQty:
+                log.warning("Inventory drift on %s: Internal=%d, Broker=%d. Overwriting.", contractId, internalQty, trueQty)
+                self._state.inventory[contractId] = trueQty
+                driftFound = True
+                self._fireDriftCallback("INVENTORY", contractId, internalQty, trueQty)
+
+        for contractId, trueQty in brokerPositions.items():
+            if contractId not in self._state.inventory and trueQty != 0:
+                log.warning("Untracked position on %s: Broker=%d. Adding to state.", contractId, trueQty)
+                self._state.inventory[contractId] = trueQty
+                driftFound = True
+                self._fireDriftCallback("INVENTORY", contractId, 0, trueQty)
+
+        
+        for val in self._ib.accountValues():
+            if val.tag == "AvailableFunds" and val.currency == "BASE":
+                trueCash = float(val.value)
+                if abs(self._state.cash - trueCash) > 0.05:  
+                    log.warning("Cash drift: Internal=%.2f, Broker=%.2f. Overwriting.", self._state.cash, trueCash)
+                    internalCash = self._state.cash
+                    self._state.cash = trueCash
+                    driftFound = True
+                    self._fireDriftCallback("CASH", "BASE", internalCash, trueCash)
+                break
+
+        if not driftFound:
+            log.debug("Audit complete: State matches broker perfectly.")
+
+    def _fireDriftCallback(self, driftType: str, asset: any, oldVal: any, newVal: any) -> None:
+        if self.onDriftCorrected:
+            self.onDriftCorrected(driftType, asset, oldVal, newVal)

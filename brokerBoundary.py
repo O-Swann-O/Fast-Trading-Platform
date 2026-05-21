@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from ib_insync import IB
+from ib_async import IB
 import config
 
 log = logging.getLogger(__name__)
