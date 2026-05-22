@@ -24,6 +24,6 @@ reconcileInterval = 300 # 5 minutes
 # --- Universe ---
 # List of tuples: (Symbol, Exchange, Currency)
 tradeUniverse = [
-    ('SPY', 'SMART', 'USD'),
-    ('QQQ', 'SMART', 'USD')
+    #('SPY', 'SMART', 'USD'),
+    #('QQQ', 'SMART', 'USD')
 ]
