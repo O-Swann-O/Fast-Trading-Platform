@@ -20,3 +20,10 @@ minCash          = 1000.0
      
 # --- Reconciler ---
 reconcileInterval = 300 # 5 minutes
+
+# --- Universe ---
+# List of tuples: (Symbol, Exchange, Currency)
+tradeUniverse = [
+    ('SPY', 'SMART', 'USD'),
+    ('QQQ', 'SMART', 'USD')
+]

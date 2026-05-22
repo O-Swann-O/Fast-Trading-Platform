@@ -42,9 +42,11 @@ orders = OrderManager(broker.ib, gate)
 async def onConnected():
     log.info("Broker Connected.")
     
-    await registry.register(Stock('SPY', 'SMART', 'USD'))
+    for sym, exch, curr in config.tradeUniverse:
+        await registry.register(Stock(sym, exch, curr))
     
     await account.start()
+    feeder.start()
     
     for contract in registry.getAll():
         feeder.subscribe(contract.conId, contract)
