@@ -2,9 +2,10 @@ import sys
 import asyncio
 import logging
 
-# --- Windows asyncio patch ---
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from ib_async import Stock
 
 import config
 from brokerBoundary import BrokerBoundary
@@ -15,29 +16,39 @@ from sessionManager import SessionManager
 from riskGate import RiskGate
 from reconciler import Reconciler
 from accountManager import AccountManager
+from contractRegistry import ContractRegistry
 
 log = logging.getLogger(__name__)
 
 state = StateManager()
 broker = BrokerBoundary()
 feeder = DataFeeder(broker.ib)
-orders = OrderManager(broker.ib)
 session = SessionManager(config.sessionStart, config.sessionEnd)
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 account = AccountManager(broker.ib)
+registry = ContractRegistry(broker.ib)
 
 gate = RiskGate(
     stateManager     = state,
+    sessionManager   = session,
     killSwitchActive = config.killSwitchActive,
     maxOrderQty      = config.maxOrderQty,
     maxPosition      = config.maxPosition,
     minCash          = config.minCash
 )
 
+orders = OrderManager(broker.ib, gate)
+
 async def onConnected():
     log.info("Broker Connected.")
+    
+    await registry.register(Stock('SPY', 'SMART', 'USD'))
+    
     await account.start()
-    feeder.start()
+    
+    for contract in registry.getAll():
+        feeder.subscribe(contract.conId, contract)
+        
     orders.start()
     reconciler.start()
 
@@ -104,11 +115,9 @@ reconciler.onDriftCorrected = onDriftCorrected
 account.onAccountUpdate = onAccountUpdate
 account.onPositionUpdate = onPositionUpdate
 
-
 async def main():
     session.start()
     await broker.run()
-
 
 if __name__ == "__main__":
     logging.basicConfig(

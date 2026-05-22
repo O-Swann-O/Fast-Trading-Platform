@@ -5,18 +5,18 @@ from ib_async import MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 log = logging.getLogger(__name__)
 
-fillTimeout    = 30
-cancelWait     = 2
-
+fillTimeout = 30
+cancelWait  = 2
 
 class OrderManager:
 
-    def __init__(self, ib):
-        self._ib       = ib
-        self._active   = {}
-        self._events   = {}
-        self.onFill    = None
-        self.onPartial = None
+    def __init__(self, ib, riskGate):
+        self._ib         = ib
+        self._gate       = riskGate
+        self._active     = {}
+        self._events     = {}
+        self.onFill      = None
+        self.onPartial   = None
         self.onCancelled = None
         self.onRejected  = None
 
@@ -27,18 +27,30 @@ class OrderManager:
         self._ib.orderStatusEvent -= self._onOrderStatus
 
     async def market(self, contractId, contract, action, qty):
+        if not self._gate.allowTrade(contractId, action, qty):
+            log.warning("RiskGate blocked market order: %s %d %s", action, qty, contractId)
+            return None
         order = MarketOrder(action, qty)
         return await self._place(contractId, contract, order, qty)
 
     async def limit(self, contractId, contract, action, qty, price):
+        if not self._gate.allowTrade(contractId, action, qty, price):
+            log.warning("RiskGate blocked limit order: %s %d %s @ %.2f", action, qty, contractId, price)
+            return None
         order = LimitOrder(action, qty, price)
         return await self._place(contractId, contract, order, qty)
 
     async def stopOrder(self, contractId, contract, action, qty, price):
+        if not self._gate.allowTrade(contractId, action, qty, price):
+            log.warning("RiskGate blocked stop order: %s %d %s STOP %.2f", action, qty, contractId, price)
+            return None
         order = StopOrder(action, qty, price)
         return await self._place(contractId, contract, order, qty)
 
     async def stopLimitOrder(self, contractId, contract, action, qty, stopPrice, limitPrice):
+        if not self._gate.allowTrade(contractId, action, qty, limitPrice):
+            log.warning("RiskGate blocked stop limit order: %s %d %s STOP %.2f LIMIT %.2f", action, qty, contractId, stopPrice, limitPrice)
+            return None
         order = StopLimitOrder(action, qty, stopPrice, limitPrice)
         return await self._place(contractId, contract, order, qty)
 
@@ -102,7 +114,6 @@ class OrderManager:
                 return
 
         except asyncio.TimeoutError:
-            log.warning("Order %s timed out — cancelling remainder.", orderId)
             self._ib.cancelOrder(trade.order)
             await asyncio.sleep(cancelWait)
 

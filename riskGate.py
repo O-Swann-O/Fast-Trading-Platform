@@ -2,20 +2,23 @@ import logging
 
 log = logging.getLogger(__name__)
 
-
 class RiskGate:
 
-    def __init__(self, stateManager, killSwitchActive: bool, maxOrderQty: int, maxPosition: int, minCash: float) -> None:
+    def __init__(self, stateManager, sessionManager, killSwitchActive: bool, maxOrderQty: int, maxPosition: int, minCash: float) -> None:
         self._state           = stateManager
+        self._session         = sessionManager
         self.killSwitchActive = killSwitchActive
         self.maxOrderQty      = maxOrderQty
         self.maxPosition      = maxPosition
         self.minCash          = minCash
 
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:
-
         if self.killSwitchActive:
             log.error("RiskGate BLOCKED: Kill switch is ACTIVE.")
+            return False
+
+        if not self._session.isActive:
+            log.warning("RiskGate BLOCKED: Market session is closed.")
             return False
 
         if qty <= 0:
