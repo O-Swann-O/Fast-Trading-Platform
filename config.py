@@ -8,6 +8,11 @@ connectTimeout = 10
 reconnectDelay = 5
 heartbeatEvery = 10
 
+# --- Engine Bridge ---
+dspHost        = "127.0.0.1"
+dspDataPort    = 5000
+dspSignalPort  = 5001
+
 # --- Session Manager ---
 sessionStart   = time(9, 30) 
 sessionEnd     = time(15, 55) 
