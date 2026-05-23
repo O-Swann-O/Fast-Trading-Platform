@@ -1,4 +1,3 @@
-import sys
 import math
 import asyncio
 import logging
@@ -77,7 +76,9 @@ def onTick(contractId, ticker):
 
 def onTargetPosition(conId, targetPos, confidence):
     currentPos = state.inventory.get(conId, 0)
-    delta      = targetPos - currentPos
+    pendingPos = state.pending_inventory.get(conId, 0)
+    assumedPos = currentPos + pendingPos
+    delta      = targetPos - assumedPos
     
     if delta != 0:
         action = "BUY" if delta > 0 else "SELL"
@@ -85,13 +86,26 @@ def onTargetPosition(conId, targetPos, confidence):
         contract = registry.getById(conId)
         
         if contract:
-            log.info("Signal generated: %s | Target: %d | Action: %s %d (Alpha: %.2f)", 
-                     conId, targetPos, action, qty, confidence)
-            asyncio.create_task(orders.market(conId, contract, action, qty))
+            ticker = state.ticks.get(conId)
+            estPrice = ticker.marketPrice() if ticker and not math.isnan(ticker.marketPrice()) else 0.0
+            log.info("Signal generated: %s | Target: %d | Action: %s %d (Alpha: %.2f)", conId, targetPos, action, qty, confidence)
+            orders.submitMarket(conId, contract, action, qty, estPrice)
         else:
             log.error("Signal rejected: Unknown contract ID %s", conId)
 
-def onFill(contractId, action, qty, price):
+def onAccepted(contractId, action, qty, estPrice):
+    pending = state.pending_inventory.get(contractId, 0)
+    state.pending_inventory[contractId] = pending + (qty if action == "BUY" else -qty)
+    if action == "BUY":
+        state.reserved_cash += (qty * estPrice)
+
+def releasePending(contractId, action, qty, estPrice):
+    pending = state.pending_inventory.get(contractId, 0)
+    state.pending_inventory[contractId] = pending - (qty if action == "BUY" else -qty)
+    if action == "BUY":
+        state.reserved_cash -= (qty * estPrice)
+
+def onFill(contractId, action, qty, price, estPrice):
     current = state.inventory.get(contractId, 0)
     if action == "BUY":
         state.inventory[contractId] = current + qty
@@ -100,47 +114,89 @@ def onFill(contractId, action, qty, price):
         state.inventory[contractId] = current - qty
         state.cash += qty * price
 
-def onPartial(contractId, action, filledQty, avgPrice, remainingQty):
-    onFill(contractId, action, filledQty, avgPrice)
+    releasePending(contractId, action, qty, estPrice)
 
-def onCancelled(contractId, orderId):
+def onPartial(contractId, action, filledQty, avgPrice, remainingQty, estPrice):
+    onFill(contractId, action, filledQty, avgPrice, estPrice)
+    releasePending(contractId, action, remainingQty, estPrice)
+
+def onCancelled(contractId, orderId, action, qty, estPrice):
     log.warning("Order cancelled — contract %s order %s", contractId, orderId)
+    releasePending(contractId, action, qty, estPrice)
 
-def onRejected(contractId, orderId):
+def onRejected(contractId, orderId, action, qty, estPrice):
     log.error("Order rejected — contract %s order %s", contractId, orderId)
+    releasePending(contractId, action, qty, estPrice)
+
+def onDriftCorrected(driftType, asset, oldVal, newVal):
+    if driftType == "INVENTORY":
+        log.warning("Drift corrected [INVENTORY] contract %s: %d -> %d", asset, oldVal, newVal)
+    elif driftType == "CASH":
+        log.warning("Drift corrected [CASH]: %.2f -> %.2f", oldVal, newVal)
 
 def onAccountUpdate(tag, value):
     if tag == "AvailableFunds":
         state.cash = value
 
 def onPositionUpdate(contractId, position):
-    if position != 0:
+    if contractId not in state.inventory and position != 0:
         state.inventory[contractId] = position
 
 broker.onConnected       = onConnected
 broker.onDisconnected    = onDisconnected
 feeder.onTick            = onTick
 bridge.onTargetPosition  = onTargetPosition
+orders.onAccepted        = onAccepted
 orders.onFill            = onFill
 orders.onPartial         = onPartial
 orders.onCancelled       = onCancelled
 orders.onRejected        = onRejected
 session.onSessionStart   = onSessionStart
 session.onSessionEnd     = onSessionEnd
-account.onAccountUpdate  = onAccountUpdate
-account.onPositionUpdate = onPositionUpdate
+account.onAccountUpdate      = onAccountUpdate
+account.onPositionUpdate     = onPositionUpdate
+reconciler.onDriftCorrected  = onDriftCorrected
+
+_shuttingDown = False
+
+async def shutdown():
+    global _shuttingDown
+    if _shuttingDown:
+        return
+    _shuttingDown = True
+
+    log.info("Shutdown initiated — cancelling open orders...")
+    await orders.cancelAll()
+    orders.stop()
+    feeder.stop()
+    reconciler.stop()
+    account.stop()
+    session.stop()
+    broker.stop()
+    log.info("Shutdown complete.")
 
 async def main():
     session.start()
     await bridge.start()
-    await broker.run()
+    try:
+        await broker.run()
+    except asyncio.CancelledError:
+        pass
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
-        log.info("System shutting down manually.")
-        session.stop()
-        reconciler.stop()
-        account.stop()
+        loop.run_until_complete(shutdown())
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()

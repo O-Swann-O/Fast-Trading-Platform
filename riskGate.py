@@ -30,15 +30,18 @@ class RiskGate:
             return False
 
         currentPos = self._state.inventory.get(contractId, 0)
+        pendingPos = self._state.pending_inventory.get(contractId, 0)
+        assumedPos = currentPos + pendingPos
         cost       = qty * estimatedPrice
 
         if action == "BUY":
-            newPos = currentPos + qty
-            if (self._state.cash - cost) < self.minCash:
-                log.warning("RiskGate BLOCKED: Insufficient cash. Cost: %.2f, Cash: %.2f", cost, self._state.cash)
+            newPos = assumedPos + qty
+            availableCash = self._state.cash - self._state.reserved_cash
+            if (availableCash - cost) < self.minCash:
+                log.warning("RiskGate BLOCKED: Insufficient cash. Cost: %.2f, Avail: %.2f", cost, availableCash)
                 return False
         elif action == "SELL":
-            newPos = currentPos - qty
+            newPos = assumedPos - qty
         else:
             log.warning("RiskGate BLOCKED: Unknown action %s.", action)
             return False

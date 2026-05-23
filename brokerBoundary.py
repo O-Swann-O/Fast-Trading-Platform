@@ -6,12 +6,12 @@ import config
 
 log = logging.getLogger(__name__)
 
-
 class BrokerBoundary:
 
     def __init__(self) -> None:
         self._ib      = IB()
         self._running = False
+        self._task    = None
         self.onConnected:    callable = None
         self.onDisconnected: callable = None
 
@@ -21,9 +21,12 @@ class BrokerBoundary:
 
     def stop(self) -> None:
         self._running = False
+        if self._task:
+            self._task.cancel()
 
     async def run(self) -> None:
         self._running = True
+        self._task = asyncio.current_task()
 
         while self._running:
             connected = await self._connect()
