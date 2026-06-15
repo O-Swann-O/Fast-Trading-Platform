@@ -41,6 +41,11 @@ class BrokerBoundary:
                 log.warning(e)
             finally:
                 self._disconnect()
+                if self._running and self.onDisconnected:
+                    try:
+                        await self.onDisconnected()
+                    except Exception as e:
+                        log.error("onDisconnected cleanup failed: %s", e)
 
             if self._running:
                 await asyncio.sleep(config.reconnectDelay)
@@ -60,18 +65,12 @@ class BrokerBoundary:
         if not self._ib.isConnected():
             return False
 
-        self._ib.disconnectedEvent += self._onDisconnected
-
         if self.onConnected:
             await self.onConnected()
 
         return True
 
     def _disconnect(self) -> None:
-        try:
-            self._ib.disconnectedEvent -= self._onDisconnected
-        except Exception:
-            pass
         self._ib.disconnect()
 
     async def _keepAlive(self) -> None:
@@ -82,7 +81,3 @@ class BrokerBoundary:
             except Exception as e:
                 raise ConnectionError(f"Heartbeat failed: {e}") from e
         raise ConnectionError("Connection dropped.")
-
-    def _onDisconnected(self) -> None:
-        if self.onDisconnected:
-            asyncio.ensure_future(self.onDisconnected())

@@ -1,4 +1,5 @@
 from datetime import time
+from ib_async import Forex, Stock
 
 # --- Broker Boundary ---
 host           = "127.0.0.1"
@@ -12,6 +13,7 @@ heartbeatEvery = 10
 dspHost        = "127.0.0.1"
 dspDataPort    = 5000
 dspSignalPort  = 5001
+maxSignalAge   = 5
 
 # --- Session Manager ---
 sessionStart   = time(9, 30) 
@@ -22,13 +24,15 @@ killSwitchActive = False
 maxOrderQty      = 10
 maxPosition      = 50
 minCash          = 1000.0
-     
+maxTickJump      = 0.05
+
 # --- Reconciler ---
 reconcileInterval = 300 # 5 minutes
 
 # --- Universe ---
 # List of tuples: (Symbol, Exchange, Currency)
 tradeUniverse = [
-    ('AAPL', 'SMART', 'USD'),
-    #('QQQ', 'SMART', 'USD')
+    Forex('EURUSD', 'IDEALPRO'),
+    Forex('GBPUSD', 'IDEALPRO'),
+    Forex('EURGBP', 'IDEALPRO')
 ]

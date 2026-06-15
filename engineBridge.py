@@ -29,7 +29,7 @@ class EngineBridge:
                 if len(data) == struct.calcsize(SIG_FMT):
                     conId, targetPos, confidence, timestamp = struct.unpack(SIG_FMT, data)
                     if self.bridge.onTargetPosition:
-                        self.bridge.onTargetPosition(conId, targetPos, confidence)
+                        self.bridge.onTargetPosition(conId, targetPos, confidence, timestamp)
 
         class DataBroadcaster(asyncio.DatagramProtocol):
             def __init__(self, bridge: 'EngineBridge'):
@@ -52,4 +52,4 @@ class EngineBridge:
     def streamTick(self, conId: int, price: float, timestamp: int) -> None:
         if self._transportOut:
             payload = struct.pack(TICK_FMT, conId, price, timestamp)
-            self._transportOut.sendto(payload) 
+            self._transportOut.sendto(payload)

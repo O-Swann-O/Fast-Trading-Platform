@@ -1,4 +1,5 @@
 import math
+import time
 import asyncio
 import logging
 
@@ -33,15 +34,16 @@ gate = RiskGate(
     killSwitchActive = config.killSwitchActive,
     maxOrderQty      = config.maxOrderQty,
     maxPosition      = config.maxPosition,
-    minCash          = config.minCash
+    minCash          = config.minCash,
+    maxTickJump      = config.maxTickJump
 )
 
 orders = OrderManager(broker.ib, gate)
 
 async def onConnected():
     log.info("Broker Connected.")
-    for sym, exch, curr in config.tradeUniverse:
-        await registry.register(Stock(sym, exch, curr))
+    for contract in config.tradeUniverse:
+        await registry.register(contract) 
     
     await account.start()
     feeder.start()
@@ -68,13 +70,19 @@ async def onSessionEnd():
     await orders.cancelAll()
 
 def onTick(contractId, ticker):
-    state.ticks[contractId] = ticker
     price = ticker.marketPrice()
     
     if not math.isnan(price):
-        bridge.streamTick(contractId, price, int(ticker.time.timestamp()))
+        if gate.validateTick(contractId, price):
+            state.ticks[contractId] = ticker
+            bridge.streamTick(contractId, price, int(ticker.time.timestamp()))
 
-def onTargetPosition(conId, targetPos, confidence):
+def onTargetPosition(conId, targetPos, confidence, timestamp):
+    age = int(time.time()) - timestamp
+    if age > config.maxSignalAge:
+        log.warning("Signal rejected: Contract %s signal is %ds old (limit %ds).", conId, age, config.maxSignalAge)
+        return
+
     currentPos = state.inventory.get(conId, 0)
     pendingPos = state.pending_inventory.get(conId, 0)
     assumedPos = currentPos + pendingPos

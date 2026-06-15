@@ -11,15 +11,19 @@ class Reconciler:
         self._state           = stateManager
         self._interval        = intervalSeconds
         self._running         = False
+        self._task            = None
         self.onDriftCorrected = None
 
     def start(self) -> None:
         if not self._running:
             self._running = True
-            asyncio.create_task(self._auditLoop())
+            self._task    = asyncio.create_task(self._auditLoop())
 
     def stop(self) -> None:
         self._running = False
+        if self._task:
+            self._task.cancel()   
+            self._task = None
 
     async def _auditLoop(self) -> None:
         while self._running:

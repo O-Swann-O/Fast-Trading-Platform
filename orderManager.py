@@ -15,6 +15,7 @@ class OrderManager:
         self._gate       = riskGate
         self._active     = {}
         self._events     = {}
+        self._tasks      = set()
         self.onAccepted  = None
         self.onFill      = None
         self.onPartial   = None
@@ -27,13 +28,19 @@ class OrderManager:
     def stop(self):
         self._ib.orderStatusEvent -= self._onOrderStatus
 
+    def _spawn(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
     def submitMarket(self, contractId, contract, action, qty, estPrice=0.0):
         if not self._gate.allowTrade(contractId, action, qty, estPrice):
             return None
         if self.onAccepted:
             self.onAccepted(contractId, action, qty, estPrice)
         order = MarketOrder(action, qty)
-        return asyncio.create_task(self._place(contractId, contract, order, qty, estPrice))
+        return self._spawn(self._place(contractId, contract, order, qty, estPrice))
 
     def submitLimit(self, contractId, contract, action, qty, limitPrice):
         if not self._gate.allowTrade(contractId, action, qty, limitPrice):
@@ -41,7 +48,7 @@ class OrderManager:
         if self.onAccepted:
             self.onAccepted(contractId, action, qty, limitPrice)
         order = LimitOrder(action, qty, limitPrice)
-        return asyncio.create_task(self._place(contractId, contract, order, qty, limitPrice))
+        return self._spawn(self._place(contractId, contract, order, qty, limitPrice))
 
     def submitStopOrder(self, contractId, contract, action, qty, stopPrice):
         if not self._gate.allowTrade(contractId, action, qty, stopPrice):
@@ -49,7 +56,7 @@ class OrderManager:
         if self.onAccepted:
             self.onAccepted(contractId, action, qty, stopPrice)
         order = StopOrder(action, qty, stopPrice)
-        return asyncio.create_task(self._place(contractId, contract, order, qty, stopPrice))
+        return self._spawn(self._place(contractId, contract, order, qty, stopPrice))
 
     def submitStopLimitOrder(self, contractId, contract, action, qty, stopPrice, limitPrice):
         if not self._gate.allowTrade(contractId, action, qty, limitPrice):
@@ -57,7 +64,7 @@ class OrderManager:
         if self.onAccepted:
             self.onAccepted(contractId, action, qty, limitPrice)
         order = StopLimitOrder(action, qty, stopPrice, limitPrice)
-        return asyncio.create_task(self._place(contractId, contract, order, qty, limitPrice))
+        return self._spawn(self._place(contractId, contract, order, qty, limitPrice))
 
     async def cancel(self, orderId):
         trade = self._active.get(orderId)
@@ -70,7 +77,14 @@ class OrderManager:
             await self.cancel(orderId)
 
     async def _place(self, contractId, contract, order, requestedQty, estPrice):
-        trade    = self._ib.placeOrder(contract, order)
+        try:
+            trade = self._ib.placeOrder(contract, order)
+        except Exception as e:
+            log.error("Order placement failed for contract %s: %s", contractId, e)
+            if self.onRejected:
+                self.onRejected(contractId, None, order.action, requestedQty, estPrice)
+            return
+
         orderId  = trade.order.orderId
         self._active[orderId] = trade
         self._events[orderId] = asyncio.Event()

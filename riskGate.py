@@ -4,13 +4,26 @@ log = logging.getLogger(__name__)
 
 class RiskGate:
 
-    def __init__(self, stateManager, sessionManager, killSwitchActive: bool, maxOrderQty: int, maxPosition: int, minCash: float) -> None:
+    def __init__(self, stateManager, sessionManager, killSwitchActive: bool, maxOrderQty: int, maxPosition: int, minCash: float, maxTickJump: float = 0.05) -> None:
         self._state           = stateManager
         self._session         = sessionManager
         self.killSwitchActive = killSwitchActive
         self.maxOrderQty      = maxOrderQty
         self.maxPosition      = maxPosition
         self.minCash          = minCash
+        self.maxTickJump      = maxTickJump
+        self._lastPrices      = {}
+
+    def validateTick(self, contractId: int, price: float) -> bool:
+        lastPrice = self._lastPrices.get(contractId)
+        if lastPrice is not None and lastPrice > 0:
+            jump = abs(price - lastPrice) / lastPrice
+            if jump > self.maxTickJump:
+                log.warning("RiskGate TICK REJECTED: Contract %s price jump %.2f%% exceeds limit %.2f%%.",
+                            contractId, jump * 100, self.maxTickJump * 100)
+                return False
+        self._lastPrices[contractId] = price
+        return True
 
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:
         if self.killSwitchActive:
