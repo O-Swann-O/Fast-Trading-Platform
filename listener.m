@@ -1,83 +1,70 @@
 clear; clc;
-
 fprintf('Starting listener...\n');
 
-% Config
-DATA_PORT       = 5000;              % Inbound UDP ticks
-SIGNAL_PORT     = 5001;              % Outbound UDP signals
-TARGET_ID       = uint32(12087792);  % Target asset
-PYTHON_HOST     = "127.0.0.1";       % Loopback
-SAMPLE_RATE_SEC = 0.100;             % 100ms time step (10 Hz)
-STALE_LIMIT_SEC = 5.000;             % 5-second staleness threshold
+DATA_PORT       = 5000;
+SIGNAL_PORT     = 5001;
+PYTHON_HOST     = "127.0.0.1";
+SAMPLE_RATE_SEC = 0.100;
+STALE_LIMIT_SEC = 5.000;
 
-% Initialize Sockets & State
+CONIDS = uint32([12087792, 12087797, 15016059, 12087820, 14433401, 15016062, 39453441]);
+N = numel(CONIDS);
+
 uIn  = udpport("datagram", "LocalPort", DATA_PORT);
 uOut = udpport("datagram");
 
-% Shared state variables 
-latestPrice     = single(NaN);
-latestTimestamp = uint32(0);
-lastLocalTick   = datetime('now');
+idxMap = containers.Map('KeyType', 'uint32', 'ValueType', 'double');
+for i = 1:N
+    idxMap(CONIDS(i)) = i;
+end
+latestMid  = nan(1, N, 'single');
+lastUpdate = -inf(1, N);
 
-% initialize clock
-tic;
-nextSampleTime = toc + SAMPLE_RATE_SEC;
+t0 = tic;
+nextSample = toc(t0) + SAMPLE_RATE_SEC;
 
 try
     while true
-        % 1. THE CATCHER PHASE 
         while uIn.NumDatagramsAvailable > 0
-            packet = read(uIn, 1, "datagram");
-            raw    = packet.Data;
-
-            if length(raw) == 12
-                conId     = typecast(raw(1:4), 'uint32');
-                price     = typecast(raw(5:8), 'single');
-                timestamp = typecast(raw(9:12), 'uint32');
-
-                if conId == TARGET_ID
-                    latestPrice     = price;      % Instantly overwrite reality
-                    latestTimestamp = timestamp;  % Broker timestamp
-                    lastLocalTick   = datetime('now'); % Local backup clock
+            pkt = read(uIn, 1, "datagram");
+            raw = pkt.Data;
+            if numel(raw) == 12
+                conId = typecast(uint8(raw(1:4)), 'uint32');
+                price = typecast(uint8(raw(5:8)), 'single');
+                if isKey(idxMap, conId)
+                    i = idxMap(conId);
+                    latestMid(i)  = price;
+                    lastUpdate(i) = toc(t0);
                 end
             end
         end
 
-        % 2.SAMPLER PHASE 
-        currentTime = toc;
-        if currentTime >= nextSampleTime
-            nextSampleTime = nextSampleTime + SAMPLE_RATE_SEC; 
-            secondsSinceLastTick = seconds(datetime('now') - lastLocalTick);
-            
-            if secondsSinceLastTick > STALE_LIMIT_SEC
-                sampledPrice = single(NaN); % NaN Cascade
-            else
-                sampledPrice = latestPrice; 
-            end
+        now_s = toc(t0);
+        if now_s >= nextSample
+            nextSample = nextSample + SAMPLE_RATE_SEC;
 
-            % 3. EXECUTE ENGINE & EMIT SIGNAL
-            [targetPosition, confidence] = calculateSignal(sampledPrice);
+            stale = (now_s - lastUpdate) > STALE_LIMIT_SEC;
+            prices = latestMid;
+            prices(stale) = single(NaN);
 
-            emitTimestamp = uint32(posixtime(datetime('now','TimeZone','local')));
+            [targets, confs] = calculateSignal(CONIDS, prices);
 
-            outBuffer = [ ...
-                typecast(TARGET_ID, 'uint8'), ...
-                typecast(int32(targetPosition), 'uint8'), ...
-                typecast(single(confidence), 'uint8'), ...
-                typecast(emitTimestamp, 'uint8') ...   
-                ];
-
-            write(uOut, outBuffer, "uint8", PYTHON_HOST, SIGNAL_PORT);
-
-            if targetPosition ~= 0
-                fprintf('Signal generated -> Target: %d | Alpha: %.2f\n', targetPosition, confidence);
+            emit_ts = uint32(posixtime(datetime('now', 'TimeZone', 'UTC')));
+            for i = 1:N
+                if stale(i)
+                    continue;
+                end
+                outBuffer = [ ...
+                    typecast(CONIDS(i),         'uint8'), ...
+                    typecast(int32(targets(i)), 'uint8'), ...
+                    typecast(single(confs(i)),  'uint8'), ...
+                    typecast(emit_ts,           'uint8') ];
+                write(uOut, outBuffer, "uint8", PYTHON_HOST, SIGNAL_PORT);
             end
         end
 
-        % 1ms high-frequency poll loop 
         pause(0.001);
     end
-
 catch err
     fprintf('Listener died: %s\n', err.message);
     clear uIn uOut;

@@ -1,16 +1,19 @@
-function [targetPosition, confidence] = calculateSignal(newPrice)
-    %#codegen
-    ringbuffer_length = 10000;
-    persistent ringBuffer head;
+function [targetPositions, confidences] = calculateSignal(conIds, prices)
+    n        = numel(conIds);
+    LOOKBACK = 600;
 
-    if isempty(ringBuffer)
-        ringBuffer = nan(1, ringbuffer_length, 'single');
-        head = int32(1);
+    persistent KEYS BUF HEAD COUNT
+    if isempty(KEYS) || numel(KEYS) ~= n || any(KEYS(:) ~= uint32(conIds(:)))
+        KEYS  = uint32(conIds(:));
+        BUF   = nan(n, LOOKBACK, 'single');
+        HEAD  = 1;
+        COUNT = 0;
     end
 
-    ringBuffer(head) = newPrice;
-    head = mod(head, int32(ringbuffer_length)) + 1;
+    BUF(:, HEAD) = single(prices(:));
+    HEAD  = mod(HEAD, LOOKBACK) + 1;
+    COUNT = min(COUNT + 1, LOOKBACK);
 
-    targetPosition = int32(0);
-    confidence = single(0.0);
+    targetPositions = zeros(n, 1, 'int32');
+    confidences     = zeros(n, 1, 'single');
 end

@@ -20,3 +20,14 @@ def load_csv(path):
                 px  = float(row["price"])
                 bid = ask = px
             yield Tick(ts, conId, bid, ask)
+
+
+def load_duckdb(root, conIds, start, end):
+    import dataStore
+    rel = dataStore.query(root, conIds, start, end)
+    while True:
+        batch = rel.fetchmany(10000)
+        if not batch:
+            break
+        for ts, conId, bid, ask in batch:
+            yield Tick(ts, int(conId), float(bid), float(ask))

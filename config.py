@@ -31,8 +31,13 @@ reconcileInterval = 300 # 5 minutes
 
 # --- Universe ---
 # List of tuples: (Symbol, Exchange, Currency)
+
 tradeUniverse = [
-    Forex('EURUSD', 'IDEALPRO'),
-    Forex('GBPUSD', 'IDEALPRO'),
-    Forex('EURGBP', 'IDEALPRO')
+    Forex("EURUSD", "IDEALPRO"),
+    Forex("GBPUSD", "IDEALPRO"),
+    Forex("USDJPY", "IDEALPRO"),
+    Forex("USDCHF", "IDEALPRO"),
+    Forex("AUDUSD", "IDEALPRO"),
+    Forex("USDCAD", "IDEALPRO"),
+    Forex("NZDUSD", "IDEALPRO"),
 ]

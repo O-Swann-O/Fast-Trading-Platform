@@ -200,10 +200,18 @@ async def run(replay, speed):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default=bt.tickPath, help="historical tick CSV")
+    ap.add_argument("--duckdb", action="store_true", help="read ticks from the Parquet store via DuckDB")
+    ap.add_argument("--root", default=bt.dataRoot, help="Parquet store root")
+    ap.add_argument("--from", dest="dfrom", default=bt.fetchStart, help="start date (DuckDB source)")
+    ap.add_argument("--to", dest="dto", default=bt.fetchEnd, help="end date (DuckDB source)")
     ap.add_argument("--speed", type=float, default=bt.speed, help="replay speed multiple (1.0 = real-time)")
     args = ap.parse_args()
 
-    replay = barReplay.load_csv(args.csv)
+    if args.duckdb:
+        conIds = [cid for _, cid in bt.universe]
+        replay = barReplay.load_duckdb(args.root, conIds, args.dfrom, args.dto)
+    else:
+        replay = barReplay.load_csv(args.csv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
     loop = asyncio.new_event_loop()
