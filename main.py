@@ -23,26 +23,46 @@ core       = TradingCore(broker.ib, clock, RingBufferSource(config.signalLookbac
 account    = AccountManager(broker.ib)
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
-_seeded = False
+CASH_TAG = "CashBalance"
+_seededCurrencies = set()
+
+
+def _tagName(tag: str) -> str:
+    return tag[len("$LEDGER-"):] if tag.startswith("$LEDGER-") else tag
 
 
 async def onConnected():
     log.info("Broker Connected.")
     if not await core.setup(config.tradeUniverse):
+        log.error("Core setup failed — system idle.")
         return
-    await account.start()
+    log.info("Contracts qualified. Starting account subscriptions...")
+    account.start()
+    log.info("Account subscriptions done. Subscribing market data...")
     core.start()
     core.sampler.start()
     reconciler.start()
+    log.info("System live: %d instruments, sampler and reconciler running.",
+             len(core.registry.getAll()))
+
+def _safe(step, label):
+    try:
+        step()
+    except Exception as e:
+        log.error("Teardown step '%s' failed: %s", label, e)
+
 
 async def onDisconnected():
     log.info("Broker Disconnected.")
     if core.sampler:
-        core.sampler.stop()
-    await core.cancelAll()
-    core.stop()
-    reconciler.stop()
-    account.stop()
+        _safe(core.sampler.stop, "sampler")
+    try:
+        await core.cancelAll()
+    except Exception as e:
+        log.error("cancelAll failed on disconnect: %s", e)
+    _safe(core.stop, "core")
+    _safe(reconciler.stop, "reconciler")
+    _safe(account.stop, "account")
 
 async def onSessionStart():
     log.info("Market session started. System is active.")
@@ -51,12 +71,21 @@ async def onSessionEnd():
     log.info("Market session ended. Halting system.")
     await core.cancelAll()
 
-def onAccountUpdate(tag, value):
-    global _seeded
-    if tag == "NetLiquidation" and not _seeded:
-        state.seed("USD", value)
-        _seeded = True
-        log.info("Book seeded from NetLiquidation: %.2f", value)
+def onAccountUpdate(tag, currency, value):
+    if _tagName(tag) != CASH_TAG:
+        return
+    if currency in ("", "BASE") or currency in _seededCurrencies:
+        return
+    if value == 0.0:
+        return
+    state.seed(currency, value)
+    _seededCurrencies.add(currency)
+    convertible = currency == "USD" or currency in state.fx._ccyPair
+    if convertible:
+        log.info("Book seeded: %s %.2f", currency, value)
+    else:
+        log.warning("Seeded %s %.2f but no traded pair can convert it to USD; "
+                    "it is excluded from equity.", currency, value)
 
 def onPositionUpdate(contractId, position):
     if contractId not in state.inventory and position != 0:
@@ -65,8 +94,8 @@ def onPositionUpdate(contractId, position):
 def onDriftCorrected(driftType, asset, oldVal, newVal):
     if driftType == "INVENTORY":
         log.warning("Drift corrected [INVENTORY] contract %s: %d -> %d", asset, oldVal, newVal)
-    elif driftType == "EQUITY":
-        log.warning("Drift corrected [EQUITY]: %.2f -> %.2f", oldVal, newVal)
+    elif driftType == "CASH":
+        log.warning("Drift corrected [CASH %s]: %.2f -> %.2f", asset, oldVal, newVal)
 
 
 broker.onConnected          = onConnected

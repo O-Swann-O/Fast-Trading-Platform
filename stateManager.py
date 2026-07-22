@@ -86,5 +86,5 @@ class StateManager:
     def reconcilePosition(self, conId: int, qty: int) -> None:
         self.inventory[conId] = qty
 
-    def adjustEquityUSD(self, diff: float) -> None:
-        self.cashBy["USD"] = self.cashBy.get("USD", 0.0) + diff
+    def reconcileCash(self, currency: str, amount: float) -> None:
+        self.cashBy[currency] = amount

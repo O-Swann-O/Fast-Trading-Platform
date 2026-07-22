@@ -36,6 +36,23 @@ class Reconciler:
     def _inFlight(self, contractId) -> bool:
         return self._state.pending_inventory.get(contractId, 0) != 0
 
+    @staticmethod
+    def _tagName(tag: str) -> str:
+        return tag[len("$LEDGER-"):] if tag.startswith("$LEDGER-") else tag
+
+    def _brokerCash(self) -> dict:
+        cash = {}
+        for val in self._ib.accountValues():
+            if self._tagName(val.tag) != "CashBalance":
+                continue
+            if val.currency in ("", "BASE"):
+                continue
+            try:
+                cash[val.currency] = float(val.value)
+            except (ValueError, TypeError):
+                continue
+        return cash
+
     def _reconcile(self) -> None:
         driftFound = False
 
@@ -64,17 +81,18 @@ class Reconciler:
             driftFound = True
             self._fireDriftCallback("INVENTORY", contractId, 0, trueQty)
 
-        for val in self._ib.accountValues():
-            if val.tag == "NetLiquidation" and val.currency == "BASE":
-                trueEquity     = float(val.value)
-                internalEquity = self._state.equity()
-                if abs(internalEquity - trueEquity) > 0.05:
-                    log.warning("Equity drift: Internal=%.2f, Broker=%.2f. Adjusting.",
-                                internalEquity, trueEquity)
-                    self._state.adjustEquityUSD(trueEquity - internalEquity)
+        anyInFlight = any(q != 0 for q in self._state.pending_inventory.values())
+        if anyInFlight:
+            log.debug("Cash audit skipped: orders in flight.")
+        else:
+            for ccy, trueCash in self._brokerCash().items():
+                internalCash = self._state.cashBy.get(ccy, 0.0)
+                if abs(internalCash - trueCash) > 0.05:
+                    log.warning("Cash drift in %s: Internal=%.2f, Broker=%.2f. Overwriting.",
+                                ccy, internalCash, trueCash)
+                    self._state.reconcileCash(ccy, trueCash)
                     driftFound = True
-                    self._fireDriftCallback("EQUITY", "BASE", internalEquity, trueEquity)
-                break
+                    self._fireDriftCallback("CASH", ccy, internalCash, trueCash)
 
         if not driftFound:
             log.debug("Audit complete: State matches broker.")

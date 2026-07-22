@@ -71,7 +71,11 @@ class OrderManager:
     async def cancel(self, orderId):
         trade = self._active.get(orderId)
         if trade:
-            self._ib.cancelOrder(trade.order)
+            try:
+                self._ib.cancelOrder(trade.order)
+            except Exception as e:
+                log.warning("Cancel failed for order %s: %s", orderId, e)
+                return
             await asyncio.sleep(cancelWait)
 
     async def cancelAll(self):
@@ -137,7 +141,10 @@ class OrderManager:
                 return
 
         except asyncio.TimeoutError:
-            self._ib.cancelOrder(trade.order)
+            try:
+                self._ib.cancelOrder(trade.order)
+            except Exception as e:
+                log.warning("Timeout-cancel failed for order %s: %s", orderId, e)
             await asyncio.sleep(cancelWait)
 
             filled = int(trade.orderStatus.filled)
