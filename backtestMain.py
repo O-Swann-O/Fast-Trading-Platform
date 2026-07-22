@@ -1,5 +1,5 @@
+import os
 import sys
-import time
 import math
 import asyncio
 import logging
@@ -12,7 +12,9 @@ from riskGate import RiskGate
 from orderManager import OrderManager
 from dataFeeder import DataFeeder
 from contractRegistry import ContractRegistry
-from engineBridge import EngineBridge
+from clock import SimClock
+from signalSource import RingBufferSource
+from signalSampler import SignalSampler
 from simBroker import SimBroker
 import barReplay
 
@@ -32,13 +34,20 @@ class SimSession:
 
 state    = StateManager()
 session  = SimSession()
+clock    = SimClock()
 sim      = SimBroker(
     conIdMap   = {f"{c.symbol}{c.currency}": cid for c, cid in bt.universe},
     halfSpread = bt.halfSpread,
 )
 registry = ContractRegistry(sim)
 feeder   = DataFeeder(sim)
-bridge   = EngineBridge(config.dspHost, config.dspDataPort, config.dspSignalPort)
+sampler  = SignalSampler(
+    source         = RingBufferSource(config.signalLookback),
+    clock          = clock,
+    conIds         = [cid for _, cid in bt.universe],
+    sampleInterval = config.sampleInterval,
+    staleLimit     = config.staleLimit,
+)
 
 gate = RiskGate(
     stateManager     = state,
@@ -60,10 +69,10 @@ def onTick(contractId, ticker):
     if not math.isnan(price):
         if gate.validateTick(contractId, price):
             state.ticks[contractId] = ticker
-            bridge.streamTick(contractId, price, int(ticker.time.timestamp()))
+            sampler.onTick(contractId, price)
 
 def onTargetPosition(conId, targetPos, confidence, timestamp):
-    age = int(time.time()) - timestamp
+    age = clock.timestamp() - timestamp
     if age > config.maxSignalAge:
         log.warning("Signal rejected: Contract %s signal is %ds old (limit %ds).",
                     conId, age, config.maxSignalAge)
@@ -118,13 +127,13 @@ def onRejected(contractId, orderId, action, qty, estPrice):
     releasePending(contractId, action, qty, estPrice)
 
 
-feeder.onTick           = onTick
-bridge.onTargetPosition = onTargetPosition
-orders.onAccepted       = onAccepted
-orders.onFill           = onFill
-orders.onPartial        = onPartial
-orders.onCancelled      = onCancelled
-orders.onRejected       = onRejected
+feeder.onTick            = onTick
+sampler.onTargetPosition = onTargetPosition
+orders.onAccepted        = onAccepted
+orders.onFill            = onFill
+orders.onPartial         = onPartial
+orders.onCancelled       = onCancelled
+orders.onRejected        = onRejected
 
 
 def _markToMarket():
@@ -163,8 +172,7 @@ def _report():
     print("=================================================")
 
 
-async def run(replay, speed):
-    await bridge.start()
+async def run(replay, pace):
     for contract, _ in bt.universe:
         await registry.register(contract)
     feeder.start()
@@ -173,23 +181,29 @@ async def run(replay, speed):
     orders.start()
     state.cash = bt.startingCash
 
-    log.info("Replaying ticks over UDP %s:%d, listening for signals on %d. MATLAB engine must be running.",
-             config.dspHost, config.dspDataPort, config.dspSignalPort)
+    log.info("Replaying ticks in-process (pace=%.2f, 0 = unthrottled).", pace)
 
     prev_ts    = None
     last_eq_ts = None
     for tick in replay:
-        if prev_ts is not None:
-            dt = (tick.ts - prev_ts).total_seconds() / speed
+        if pace > 0 and prev_ts is not None:
+            dt = (tick.ts - prev_ts).total_seconds() / pace
             await asyncio.sleep(dt if dt > 0 else 0)
+        else:
+            await asyncio.sleep(0)
         prev_ts = tick.ts
+
+        clock.advance(tick.ts)
         session.update(tick.ts)
         sim.feedTick(tick.conId, tick.bid, tick.ask, tick.ts)
+        sampler.poll()
+
         if last_eq_ts is None or (tick.ts - last_eq_ts).total_seconds() >= 60:
             _equity.append((tick.ts, _markToMarket()))
             last_eq_ts = tick.ts
 
-    await asyncio.sleep(0.5)
+    for _ in range(4):
+        await asyncio.sleep(0)
     await orders.cancelAll()
     orders.stop()
     feeder.stop()
@@ -199,25 +213,30 @@ async def run(replay, speed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default=bt.tickPath, help="historical tick CSV")
-    ap.add_argument("--duckdb", action="store_true", help="read ticks from the Parquet store via DuckDB")
-    ap.add_argument("--root", default=bt.dataRoot, help="Parquet store root")
-    ap.add_argument("--from", dest="dfrom", default=bt.fetchStart, help="start date (DuckDB source)")
-    ap.add_argument("--to", dest="dto", default=bt.fetchEnd, help="end date (DuckDB source)")
-    ap.add_argument("--speed", type=float, default=bt.speed, help="replay speed multiple (1.0 = real-time)")
+    ap.add_argument("--source", default="dukascopy",
+                    help=" | ".join(bt.stores) + " | path to a tick CSV")
+    ap.add_argument("--from", dest="dfrom", default=bt.testStart, help="start date")
+    ap.add_argument("--to", dest="dto", default=bt.testEnd, help="end date")
+    ap.add_argument("--pace", type=float, default=0.0,
+                    help="wall-clock pacing multiple; 0 = unthrottled (results are identical either way)")
     args = ap.parse_args()
 
-    if args.duckdb:
+    if args.source in bt.stores:
+        root = bt.stores[args.source]
+        if not os.path.isdir(root):
+            sys.exit(f"Store '{args.source}' not found at {root}")
         conIds = [cid for _, cid in bt.universe]
-        replay = barReplay.load_duckdb(args.root, conIds, args.dfrom, args.dto)
+        replay = barReplay.load_duckdb(root, conIds, args.dfrom, args.dto)
+    elif os.path.isfile(args.source):
+        replay = barReplay.load_csv(args.source)
     else:
-        replay = barReplay.load_csv(args.csv)
+        sys.exit(f"Unknown source '{args.source}' (expected {' | '.join(bt.stores)} or a CSV path)")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(run(replay, args.speed))
+        loop.run_until_complete(run(replay, args.pace))
     except KeyboardInterrupt:
         log.info("Interrupted — reporting partial result.")
     finally:

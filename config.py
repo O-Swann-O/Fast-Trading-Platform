@@ -1,5 +1,5 @@
 from datetime import time
-from ib_async import Forex, Stock
+from ib_async import Forex
 
 # --- Broker Boundary ---
 host           = "127.0.0.1"
@@ -14,6 +14,11 @@ dspHost        = "127.0.0.1"
 dspDataPort    = 5000
 dspSignalPort  = 5001
 maxSignalAge   = 5
+
+# --- Signal Sampler ---
+sampleInterval = 1.0
+staleLimit     = 5.0
+signalLookback = 600
 
 # --- Session Manager ---
 sessionStart   = time(9, 30) 

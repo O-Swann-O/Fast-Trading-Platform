@@ -16,13 +16,13 @@ class RiskGate:
 
     def validateTick(self, contractId: int, price: float) -> bool:
         lastPrice = self._lastPrices.get(contractId)
+        self._lastPrices[contractId] = price
         if lastPrice is not None and lastPrice > 0:
             jump = abs(price - lastPrice) / lastPrice
             if jump > self.maxTickJump:
                 log.warning("RiskGate TICK REJECTED: Contract %s price jump %.2f%% exceeds limit %.2f%%.",
                             contractId, jump * 100, self.maxTickJump * 100)
                 return False
-        self._lastPrices[contractId] = price
         return True
 
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:

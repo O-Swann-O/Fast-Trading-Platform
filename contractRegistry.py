@@ -10,18 +10,24 @@ class ContractRegistry:
         self._by_id  = {}
         self._by_sym = {}
 
+    @staticmethod
+    def _symKey(contract: Contract) -> str:
+        if contract.secType == "CASH":
+            return f"{contract.symbol}{contract.currency}"
+        return contract.symbol
+
     async def register(self, contract: Contract) -> int:
         qualified = await self._ib.qualifyContractsAsync(contract)
-        
+
         if not qualified:
             log.error("Registry failed to qualify contract: %s", contract)
             return None
 
         valid_contract = qualified[0]
         conId = valid_contract.conId
-        
+
         self._by_id[conId] = valid_contract
-        self._by_sym[valid_contract.symbol] = conId
+        self._by_sym[self._symKey(valid_contract)] = conId
         
         log.info("Registered Contract: %s (ID: %s, Exchange: %s)", 
                  valid_contract.localSymbol, conId, valid_contract.exchange)

@@ -59,7 +59,7 @@ async def _fetch_contract(ib, contract, conId, start, end):
     total = 0
     for day in sorted(rows_by_day):
         rows = sorted(rows_by_day[day], key=lambda r: r["time"])
-        dataStore.write_day(bt.dataRoot, symbol, day, rows)
+        dataStore.write_day(bt.ibkrDataRoot, symbol, day, rows)
         log.info("%s: wrote %s (%d bars)", symbol, day, len(rows))
         total += len(rows)
     log.info("Fetched %d bars total for %s", total, symbol)

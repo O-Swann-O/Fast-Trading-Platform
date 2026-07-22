@@ -1,9 +1,6 @@
 import math
-import time
 import asyncio
 import logging
-
-from ib_async import Stock
 
 import config
 from brokerBoundary import BrokerBoundary
@@ -15,7 +12,9 @@ from riskGate import RiskGate
 from reconciler import Reconciler
 from accountManager import AccountManager
 from contractRegistry import ContractRegistry
-from engineBridge import EngineBridge
+from clock import WallClock
+from signalSource import RingBufferSource
+from signalSampler import SignalSampler
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +25,8 @@ session    = SessionManager(config.sessionStart, config.sessionEnd)
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 account    = AccountManager(broker.ib)
 registry   = ContractRegistry(broker.ib)
-bridge     = EngineBridge(config.dspHost, config.dspDataPort, config.dspSignalPort)
+clock      = WallClock()
+sampler    = None
 
 gate = RiskGate(
     stateManager     = state,
@@ -41,21 +41,40 @@ gate = RiskGate(
 orders = OrderManager(broker.ib, gate)
 
 async def onConnected():
+    global sampler
     log.info("Broker Connected.")
     for contract in config.tradeUniverse:
-        await registry.register(contract) 
-    
+        await registry.register(contract)
+
     await account.start()
     feeder.start()
-    
+
     for contract in registry.getAll():
         feeder.subscribe(contract.conId, contract)
-        
+
+    conIds = [c.conId for c in registry.getAll()]
+    if not conIds:
+        log.error("No contracts qualified. Signal sampler not started.")
+    else:
+        sampler = SignalSampler(
+            source         = RingBufferSource(config.signalLookback),
+            clock          = clock,
+            conIds         = conIds,
+            sampleInterval = config.sampleInterval,
+            staleLimit     = config.staleLimit,
+        )
+        sampler.onTargetPosition = onTargetPosition
+        sampler.start()
+
     orders.start()
     reconciler.start()
 
 async def onDisconnected():
+    global sampler
     log.info("Broker Disconnected.")
+    if sampler:
+        sampler.stop()
+        sampler = None
     await orders.cancelAll()
     orders.stop()
     feeder.stop()
@@ -71,14 +90,15 @@ async def onSessionEnd():
 
 def onTick(contractId, ticker):
     price = ticker.marketPrice()
-    
+
     if not math.isnan(price):
         if gate.validateTick(contractId, price):
             state.ticks[contractId] = ticker
-            bridge.streamTick(contractId, price, int(ticker.time.timestamp()))
+            if sampler:
+                sampler.onTick(contractId, price)
 
 def onTargetPosition(conId, targetPos, confidence, timestamp):
-    age = int(time.time()) - timestamp
+    age = clock.timestamp() - timestamp
     if age > config.maxSignalAge:
         log.warning("Signal rejected: Contract %s signal is %ds old (limit %ds).", conId, age, config.maxSignalAge)
         return
@@ -87,12 +107,12 @@ def onTargetPosition(conId, targetPos, confidence, timestamp):
     pendingPos = state.pending_inventory.get(conId, 0)
     assumedPos = currentPos + pendingPos
     delta      = targetPos - assumedPos
-    
+
     if delta != 0:
         action = "BUY" if delta > 0 else "SELL"
         qty    = abs(delta)
         contract = registry.getById(conId)
-        
+
         if contract:
             ticker = state.ticks.get(conId)
             estPrice = ticker.marketPrice() if ticker and not math.isnan(ticker.marketPrice()) else 0.0
@@ -153,7 +173,6 @@ def onPositionUpdate(contractId, position):
 broker.onConnected       = onConnected
 broker.onDisconnected    = onDisconnected
 feeder.onTick            = onTick
-bridge.onTargetPosition  = onTargetPosition
 orders.onAccepted        = onAccepted
 orders.onFill            = onFill
 orders.onPartial         = onPartial
@@ -168,12 +187,15 @@ reconciler.onDriftCorrected  = onDriftCorrected
 _shuttingDown = False
 
 async def shutdown():
-    global _shuttingDown
+    global _shuttingDown, sampler
     if _shuttingDown:
         return
     _shuttingDown = True
 
     log.info("Shutdown initiated — cancelling open orders...")
+    if sampler:
+        sampler.stop()
+        sampler = None
     await orders.cancelAll()
     orders.stop()
     feeder.stop()
@@ -185,7 +207,6 @@ async def shutdown():
 
 async def main():
     session.start()
-    await bridge.start()
     try:
         await broker.run()
     except asyncio.CancelledError:
@@ -193,10 +214,10 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
-    
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
+
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:

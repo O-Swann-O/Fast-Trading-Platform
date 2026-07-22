@@ -1,12 +1,9 @@
 import os
 from ib_async import Forex
-import config
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 startingCash = 100_000.0
-
-speed = 1.0
 
 forceSessionActive = False
 
@@ -30,8 +27,16 @@ halfSpread = {
     39453441: 0.0,   # NZDUSD
 }
 
-dataRoot = os.path.join(_HERE, "ticks")
-tickPath = os.path.join(_HERE, "fx_ticks.csv")
+dataRoot     = os.path.join(_HERE, "ticks")
+ibkrDataRoot = os.path.join(_HERE, "ticks_ibkr")
+
+stores = {
+    "dukascopy": dataRoot,
+    "ibkr":      ibkrDataRoot,
+}
 
 fetchStart = "2024-08-24"
 fetchEnd   = "2026-06-16"
+
+testStart  = "2025-01-01"
+testEnd    = "2025-02-01"
