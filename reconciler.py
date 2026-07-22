@@ -6,9 +6,9 @@ log = logging.getLogger(__name__)
 
 class Reconciler:
 
-    def __init__(self, ib, stateManager, intervalSeconds: int = 300) -> None:
+    def __init__(self, ib, state, intervalSeconds: int = 300) -> None:
         self._ib              = ib
-        self._state           = stateManager
+        self._state           = state
         self._interval        = intervalSeconds
         self._running         = False
         self._task            = None
@@ -22,7 +22,7 @@ class Reconciler:
     def stop(self) -> None:
         self._running = False
         if self._task:
-            self._task.cancel()   
+            self._task.cancel()
             self._task = None
 
     async def _auditLoop(self) -> None:
@@ -33,41 +33,52 @@ class Reconciler:
             except Exception as e:
                 log.error("Reconciler failed during audit: %s", e)
 
+    def _inFlight(self, contractId) -> bool:
+        return self._state.pending_inventory.get(contractId, 0) != 0
+
     def _reconcile(self) -> None:
         driftFound = False
 
-        brokerPositions = {p.contract.conId: int(p.position) for p in self._ib.positions() if p.contract}
-        
+        brokerPositions = {p.contract.conId: int(p.position)
+                           for p in self._ib.positions() if p.contract}
+
         for contractId, internalQty in list(self._state.inventory.items()):
+            if self._inFlight(contractId):
+                log.debug("Reconcile skipped %s: order in flight.", contractId)
+                continue
             trueQty = brokerPositions.get(contractId, 0)
             if internalQty != trueQty:
-                log.warning("Inventory drift on %s: Internal=%d, Broker=%d. Overwriting.", contractId, internalQty, trueQty)
-                self._state.inventory[contractId] = trueQty
+                log.warning("Inventory drift on %s: Internal=%d, Broker=%d. Overwriting.",
+                            contractId, internalQty, trueQty)
+                self._state.reconcilePosition(contractId, trueQty)
                 driftFound = True
                 self._fireDriftCallback("INVENTORY", contractId, internalQty, trueQty)
 
         for contractId, trueQty in brokerPositions.items():
-            if contractId not in self._state.inventory and trueQty != 0:
-                log.warning("Untracked position on %s: Broker=%d. Adding to state.", contractId, trueQty)
-                self._state.inventory[contractId] = trueQty
-                driftFound = True
-                self._fireDriftCallback("INVENTORY", contractId, 0, trueQty)
+            if contractId in self._state.inventory or trueQty == 0:
+                continue
+            if self._inFlight(contractId):
+                continue
+            log.warning("Untracked position on %s: Broker=%d. Adding to state.", contractId, trueQty)
+            self._state.reconcilePosition(contractId, trueQty)
+            driftFound = True
+            self._fireDriftCallback("INVENTORY", contractId, 0, trueQty)
 
-        
         for val in self._ib.accountValues():
-            if val.tag == "AvailableFunds" and val.currency == "BASE":
-                trueCash = float(val.value)
-                if abs(self._state.cash - trueCash) > 0.05:  
-                    log.warning("Cash drift: Internal=%.2f, Broker=%.2f. Overwriting.", self._state.cash, trueCash)
-                    internalCash = self._state.cash
-                    self._state.cash = trueCash
+            if val.tag == "NetLiquidation" and val.currency == "BASE":
+                trueEquity     = float(val.value)
+                internalEquity = self._state.equity()
+                if abs(internalEquity - trueEquity) > 0.05:
+                    log.warning("Equity drift: Internal=%.2f, Broker=%.2f. Adjusting.",
+                                internalEquity, trueEquity)
+                    self._state.adjustEquityUSD(trueEquity - internalEquity)
                     driftFound = True
-                    self._fireDriftCallback("CASH", "BASE", internalCash, trueCash)
+                    self._fireDriftCallback("EQUITY", "BASE", internalEquity, trueEquity)
                 break
 
         if not driftFound:
-            log.debug("Audit complete: State matches broker perfectly.")
+            log.debug("Audit complete: State matches broker.")
 
-    def _fireDriftCallback(self, driftType: str, asset: any, oldVal: any, newVal: any) -> None:
+    def _fireDriftCallback(self, driftType, asset, oldVal, newVal) -> None:
         if self.onDriftCorrected:
             self.onDriftCorrected(driftType, asset, oldVal, newVal)

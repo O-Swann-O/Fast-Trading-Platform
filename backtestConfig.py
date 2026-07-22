@@ -35,8 +35,8 @@ stores = {
     "ibkr":      ibkrDataRoot,
 }
 
-fetchStart = "2024-08-24"
+fetchStart = "2024-01-01"
 fetchEnd   = "2026-06-16"
 
 testStart  = "2025-01-01"
-testEnd    = "2025-02-01"
+testEnd    = "2025-01-04"

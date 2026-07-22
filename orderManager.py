@@ -27,6 +27,8 @@ class OrderManager:
 
     def stop(self):
         self._ib.orderStatusEvent -= self._onOrderStatus
+        for task in list(self._tasks):
+            task.cancel()
 
     def _spawn(self, coro):
         task = asyncio.create_task(coro)

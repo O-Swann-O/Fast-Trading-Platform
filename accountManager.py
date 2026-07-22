@@ -25,6 +25,7 @@ class AccountManager:
         self._ib.updatePortfolioEvent += self._onPortfolio
 
         await self._ib.reqAccountUpdatesAsync(self._account)
+        await self._ib.reqPositionsAsync()
 
     def stop(self) -> None:
         if self._account and self._ib.isConnected():

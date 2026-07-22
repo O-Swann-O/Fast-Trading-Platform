@@ -1,83 +1,46 @@
-import math
 import asyncio
 import logging
 
 import config
 from brokerBoundary import BrokerBoundary
-from dataFeeder import DataFeeder
-from orderManager import OrderManager
-from stateManager import StateManager
-from sessionManager import SessionManager
-from riskGate import RiskGate
-from reconciler import Reconciler
 from accountManager import AccountManager
-from contractRegistry import ContractRegistry
+from reconciler import Reconciler
 from clock import WallClock
+from sessionManager import SessionManager
+from fxRates import FxRates
+from stateManager import StateManager
 from signalSource import RingBufferSource
-from signalSampler import SignalSampler
+from tradingCore import TradingCore
 
 log = logging.getLogger(__name__)
 
-state      = StateManager()
 broker     = BrokerBoundary()
-feeder     = DataFeeder(broker.ib)
-session    = SessionManager(config.sessionStart, config.sessionEnd)
-reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
-account    = AccountManager(broker.ib)
-registry   = ContractRegistry(broker.ib)
 clock      = WallClock()
-sampler    = None
+session    = SessionManager(clock, config.tradingHoursUTC)
+fx         = FxRates()
+state      = StateManager(fx, config.marginRate)
+core       = TradingCore(broker.ib, clock, RingBufferSource(config.signalLookback), session, state)
+account    = AccountManager(broker.ib)
+reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
-gate = RiskGate(
-    stateManager     = state,
-    sessionManager   = session,
-    killSwitchActive = config.killSwitchActive,
-    maxOrderQty      = config.maxOrderQty,
-    maxPosition      = config.maxPosition,
-    minCash          = config.minCash,
-    maxTickJump      = config.maxTickJump
-)
+_seeded = False
 
-orders = OrderManager(broker.ib, gate)
 
 async def onConnected():
-    global sampler
     log.info("Broker Connected.")
-    for contract in config.tradeUniverse:
-        await registry.register(contract)
-
+    if not await core.setup(config.tradeUniverse):
+        return
     await account.start()
-    feeder.start()
-
-    for contract in registry.getAll():
-        feeder.subscribe(contract.conId, contract)
-
-    conIds = [c.conId for c in registry.getAll()]
-    if not conIds:
-        log.error("No contracts qualified. Signal sampler not started.")
-    else:
-        sampler = SignalSampler(
-            source         = RingBufferSource(config.signalLookback),
-            clock          = clock,
-            conIds         = conIds,
-            sampleInterval = config.sampleInterval,
-            staleLimit     = config.staleLimit,
-        )
-        sampler.onTargetPosition = onTargetPosition
-        sampler.start()
-
-    orders.start()
+    core.start()
+    core.sampler.start()
     reconciler.start()
 
 async def onDisconnected():
-    global sampler
     log.info("Broker Disconnected.")
-    if sampler:
-        sampler.stop()
-        sampler = None
-    await orders.cancelAll()
-    orders.stop()
-    feeder.stop()
+    if core.sampler:
+        core.sampler.stop()
+    await core.cancelAll()
+    core.stop()
     reconciler.stop()
     account.stop()
 
@@ -86,124 +49,54 @@ async def onSessionStart():
 
 async def onSessionEnd():
     log.info("Market session ended. Halting system.")
-    await orders.cancelAll()
+    await core.cancelAll()
 
-def onTick(contractId, ticker):
-    price = ticker.marketPrice()
+def onAccountUpdate(tag, value):
+    global _seeded
+    if tag == "NetLiquidation" and not _seeded:
+        state.seed("USD", value)
+        _seeded = True
+        log.info("Book seeded from NetLiquidation: %.2f", value)
 
-    if not math.isnan(price):
-        if gate.validateTick(contractId, price):
-            state.ticks[contractId] = ticker
-            if sampler:
-                sampler.onTick(contractId, price)
-
-def onTargetPosition(conId, targetPos, confidence, timestamp):
-    age = clock.timestamp() - timestamp
-    if age > config.maxSignalAge:
-        log.warning("Signal rejected: Contract %s signal is %ds old (limit %ds).", conId, age, config.maxSignalAge)
-        return
-
-    currentPos = state.inventory.get(conId, 0)
-    pendingPos = state.pending_inventory.get(conId, 0)
-    assumedPos = currentPos + pendingPos
-    delta      = targetPos - assumedPos
-
-    if delta != 0:
-        action = "BUY" if delta > 0 else "SELL"
-        qty    = abs(delta)
-        contract = registry.getById(conId)
-
-        if contract:
-            ticker = state.ticks.get(conId)
-            estPrice = ticker.marketPrice() if ticker and not math.isnan(ticker.marketPrice()) else 0.0
-            log.info("Signal generated: %s | Target: %d | Action: %s %d (Alpha: %.2f)", conId, targetPos, action, qty, confidence)
-            orders.submitMarket(conId, contract, action, qty, estPrice)
-        else:
-            log.error("Signal rejected: Unknown contract ID %s", conId)
-
-def onAccepted(contractId, action, qty, estPrice):
-    pending = state.pending_inventory.get(contractId, 0)
-    state.pending_inventory[contractId] = pending + (qty if action == "BUY" else -qty)
-    if action == "BUY":
-        state.reserved_cash += (qty * estPrice)
-
-def releasePending(contractId, action, qty, estPrice):
-    pending = state.pending_inventory.get(contractId, 0)
-    state.pending_inventory[contractId] = pending - (qty if action == "BUY" else -qty)
-    if action == "BUY":
-        state.reserved_cash -= (qty * estPrice)
-
-def onFill(contractId, action, qty, price, estPrice):
-    current = state.inventory.get(contractId, 0)
-    if action == "BUY":
-        state.inventory[contractId] = current + qty
-        state.cash -= qty * price
-    elif action == "SELL":
-        state.inventory[contractId] = current - qty
-        state.cash += qty * price
-
-    releasePending(contractId, action, qty, estPrice)
-
-def onPartial(contractId, action, filledQty, avgPrice, remainingQty, estPrice):
-    onFill(contractId, action, filledQty, avgPrice, estPrice)
-    releasePending(contractId, action, remainingQty, estPrice)
-
-def onCancelled(contractId, orderId, action, qty, estPrice):
-    log.warning("Order cancelled — contract %s order %s", contractId, orderId)
-    releasePending(contractId, action, qty, estPrice)
-
-def onRejected(contractId, orderId, action, qty, estPrice):
-    log.error("Order rejected — contract %s order %s", contractId, orderId)
-    releasePending(contractId, action, qty, estPrice)
+def onPositionUpdate(contractId, position):
+    if contractId not in state.inventory and position != 0:
+        state.reconcilePosition(contractId, position)
 
 def onDriftCorrected(driftType, asset, oldVal, newVal):
     if driftType == "INVENTORY":
         log.warning("Drift corrected [INVENTORY] contract %s: %d -> %d", asset, oldVal, newVal)
-    elif driftType == "CASH":
-        log.warning("Drift corrected [CASH]: %.2f -> %.2f", oldVal, newVal)
+    elif driftType == "EQUITY":
+        log.warning("Drift corrected [EQUITY]: %.2f -> %.2f", oldVal, newVal)
 
-def onAccountUpdate(tag, value):
-    if tag == "AvailableFunds":
-        state.cash = value
 
-def onPositionUpdate(contractId, position):
-    if contractId not in state.inventory and position != 0:
-        state.inventory[contractId] = position
-
-broker.onConnected       = onConnected
-broker.onDisconnected    = onDisconnected
-feeder.onTick            = onTick
-orders.onAccepted        = onAccepted
-orders.onFill            = onFill
-orders.onPartial         = onPartial
-orders.onCancelled       = onCancelled
-orders.onRejected        = onRejected
-session.onSessionStart   = onSessionStart
-session.onSessionEnd     = onSessionEnd
-account.onAccountUpdate      = onAccountUpdate
-account.onPositionUpdate     = onPositionUpdate
-reconciler.onDriftCorrected  = onDriftCorrected
+broker.onConnected          = onConnected
+broker.onDisconnected       = onDisconnected
+session.onSessionStart      = onSessionStart
+session.onSessionEnd        = onSessionEnd
+account.onAccountUpdate     = onAccountUpdate
+account.onPositionUpdate    = onPositionUpdate
+reconciler.onDriftCorrected = onDriftCorrected
 
 _shuttingDown = False
 
+
 async def shutdown():
-    global _shuttingDown, sampler
+    global _shuttingDown
     if _shuttingDown:
         return
     _shuttingDown = True
 
     log.info("Shutdown initiated — cancelling open orders...")
-    if sampler:
-        sampler.stop()
-        sampler = None
-    await orders.cancelAll()
-    orders.stop()
-    feeder.stop()
+    if core.sampler:
+        core.sampler.stop()
+    await core.cancelAll()
+    core.stop()
     reconciler.stop()
     account.stop()
     session.stop()
     broker.stop()
     log.info("Shutdown complete.")
+
 
 async def main():
     session.start()
@@ -211,6 +104,7 @@ async def main():
         await broker.run()
     except asyncio.CancelledError:
         pass
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")

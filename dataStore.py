@@ -37,7 +37,8 @@ def query(root, conIds, start, end):
         SELECT time, conId, bid, ask
         FROM read_parquet('{_glob(root)}')
         WHERE conId IN ({placeholders})
-          AND time BETWEEN ? AND ?
+          AND time >= CAST(? AS TIMESTAMP)
+          AND time <  CAST(? AS DATE) + INTERVAL 1 DAY
         ORDER BY time
     """
     return con.execute(sql, [*conIds, start, end])
@@ -51,7 +52,8 @@ def export_csv(root, conIds, start, end, out_path):
           SELECT time, conId, bid, ask
           FROM read_parquet('{_glob(root)}')
           WHERE conId IN ({placeholders})
-            AND time BETWEEN ? AND ?
+            AND time >= CAST(? AS TIMESTAMP)
+            AND time <  CAST(? AS DATE) + INTERVAL 1 DAY
           ORDER BY time
         ) TO '{out_path.replace("'", "''")}' (HEADER, DELIMITER ',')
     """
