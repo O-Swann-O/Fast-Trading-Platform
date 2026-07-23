@@ -39,10 +39,37 @@ reconcileInterval = 300
 # --- Universe ---
 tradeUniverse = [
     Forex("EURUSD", "IDEALPRO"),
+    Forex("EURGBP", "IDEALPRO"),
+    Forex("EURAUD", "IDEALPRO"),
+    Forex("EURNZD", "IDEALPRO"),
+    Forex("EURCAD", "IDEALPRO"),
+    Forex("EURCHF", "IDEALPRO"),
+    Forex("EURJPY", "IDEALPRO"),
+
     Forex("GBPUSD", "IDEALPRO"),
-    Forex("USDJPY", "IDEALPRO"),
-    Forex("USDCHF", "IDEALPRO"),
+    Forex("GBPAUD", "IDEALPRO"),
+    Forex("GBPNZD", "IDEALPRO"),
+    Forex("GBPCAD", "IDEALPRO"),
+    Forex("GBPCHF", "IDEALPRO"),
+    Forex("GBPJPY", "IDEALPRO"),
+
     Forex("AUDUSD", "IDEALPRO"),
-    Forex("USDCAD", "IDEALPRO"),
+    Forex("AUDNZD", "IDEALPRO"),
+    Forex("AUDCAD", "IDEALPRO"),
+    Forex("AUDCHF", "IDEALPRO"),
+    Forex("AUDJPY", "IDEALPRO"),
+
     Forex("NZDUSD", "IDEALPRO"),
+    Forex("NZDCAD", "IDEALPRO"),
+    Forex("NZDCHF", "IDEALPRO"),
+    Forex("NZDJPY", "IDEALPRO"),
+
+    Forex("USDCAD", "IDEALPRO"),
+    Forex("USDCHF", "IDEALPRO"),
+    Forex("USDJPY", "IDEALPRO"),
+
+    Forex("CADCHF", "IDEALPRO"),
+    Forex("CADJPY", "IDEALPRO"),
+
+    Forex("CHFJPY", "IDEALPRO"),
 ]

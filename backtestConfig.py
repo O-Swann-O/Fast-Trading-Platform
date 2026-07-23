@@ -9,23 +9,42 @@ forceSessionActive = False
 
 universe = [
     (Forex("EURUSD", "IDEALPRO"), 12087792),
+    (Forex("EURGBP", "IDEALPRO"), 12087807),
+    (Forex("EURAUD", "IDEALPRO"), 15016065),
+    (Forex("EURNZD", "IDEALPRO"), 47101302),
+    (Forex("EURCAD", "IDEALPRO"), 15016068),
+    (Forex("EURCHF", "IDEALPRO"), 12087817),
+    (Forex("EURJPY", "IDEALPRO"), 14321016),
+
     (Forex("GBPUSD", "IDEALPRO"), 12087797),
-    (Forex("USDJPY", "IDEALPRO"), 15016059),
-    (Forex("USDCHF", "IDEALPRO"), 12087820),
+    (Forex("GBPAUD", "IDEALPRO"), 15016075),
+    (Forex("GBPNZD", "IDEALPRO"), 47101305),
+    (Forex("GBPCAD", "IDEALPRO"), 15016078),
+    (Forex("GBPCHF", "IDEALPRO"), 12087826),
+    (Forex("GBPJPY", "IDEALPRO"), 14321015),
+
     (Forex("AUDUSD", "IDEALPRO"), 14433401),
-    (Forex("USDCAD", "IDEALPRO"), 15016062),
+    (Forex("AUDNZD", "IDEALPRO"), 39453424),
+    (Forex("AUDCAD", "IDEALPRO"), 15016138),
+    (Forex("AUDCHF", "IDEALPRO"), 15016125),
+    (Forex("AUDJPY", "IDEALPRO"), 15016133),
+
     (Forex("NZDUSD", "IDEALPRO"), 39453441),
+    (Forex("NZDCAD", "IDEALPRO"), 46189223),
+    (Forex("NZDCHF", "IDEALPRO"), 46189224),
+    (Forex("NZDJPY", "IDEALPRO"), 39453444),
+
+    (Forex("USDCAD", "IDEALPRO"), 15016062),
+    (Forex("USDCHF", "IDEALPRO"), 12087820),
+    (Forex("USDJPY", "IDEALPRO"), 15016059),
+
+    (Forex("CADCHF", "IDEALPRO"), 15016234),
+    (Forex("CADJPY", "IDEALPRO"), 15016241),
+
+    (Forex("CHFJPY", "IDEALPRO"), 14321010),
 ]
 
-halfSpread = {
-    12087792: 0.0,   # EURUSD
-    12087797: 0.0,   # GBPUSD
-    15016059: 0.0,   # USDJPY
-    12087820: 0.0,   # USDCHF
-    14433401: 0.0,   # AUDUSD
-    15016062: 0.0,   # USDCAD
-    39453441: 0.0,   # NZDUSD
-}
+halfSpread = {cid: 0.0 for _, cid in universe}
 
 dataRoot     = os.path.join(_HERE, "ticks")
 ibkrDataRoot = os.path.join(_HERE, "ticks_ibkr")
@@ -39,4 +58,4 @@ fetchStart = "2024-01-01"
 fetchEnd   = "2026-06-16"
 
 testStart  = "2025-01-01"
-testEnd    = "2025-01-04"
+testEnd    = "2025-02-01"

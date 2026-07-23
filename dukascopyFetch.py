@@ -1,7 +1,9 @@
+import os
 import time
 import lzma
 import struct
 import logging
+import argparse
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
@@ -28,7 +30,7 @@ def _url(symbol, dt):
 
 def _download(url):
     last = None
-    for _ in range(2):
+    for attempt in range(3):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -39,7 +41,7 @@ def _download(url):
             last = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = e
-        time.sleep(1.0)
+        time.sleep(2.0 * (attempt + 1))
     log.warning("download failed %s: %s", url, last)
     return None
 
@@ -67,6 +69,10 @@ def _floor(ts, secs):
     return ts.replace(second=ts.second - (ts.second % secs), microsecond=0)
 
 
+def _day_exists(symbol, day):
+    return os.path.exists(os.path.join(bt.dataRoot, symbol, f"{day.isoformat()}.parquet"))
+
+
 def _flush(symbol, conId, day, buf):
     if not buf:
         return 0
@@ -77,18 +83,31 @@ def _flush(symbol, conId, day, buf):
     return len(rows)
 
 
-def fetch_pair(symbol, conId, start, end):
+def fetch_pair(symbol, conId, start, end, skipExisting=True):
     scale   = _scale(symbol)
     dt      = start.replace(minute=0, second=0, microsecond=0)
     cur_day = None
     buf     = {}
     total   = 0
+    skipped = 0
     while dt < end:
         if cur_day is None:
             cur_day = dt.date()
         if dt.date() != cur_day:
             total += _flush(symbol, conId, cur_day, buf)
             buf, cur_day = {}, dt.date()
+
+        if dt.weekday() == 5:
+            dt = datetime.combine(dt.date() + timedelta(days=1), datetime.min.time())
+            buf, cur_day = {}, None
+            continue
+
+        if skipExisting and _day_exists(symbol, dt.date()):
+            skipped += 1
+            dt = datetime.combine(dt.date() + timedelta(days=1), datetime.min.time())
+            buf, cur_day = {}, None
+            continue
+
         raw = _download(_url(symbol, dt))
         if raw:
             try:
@@ -99,19 +118,35 @@ def fetch_pair(symbol, conId, start, end):
                 log.warning("decode failed %s: %s", _url(symbol, dt), e)
         time.sleep(PACE)
         dt += timedelta(hours=1)
-    total += _flush(symbol, conId, cur_day, buf)
-    log.info("Fetched %d rows for %s", total, symbol)
+    if cur_day is not None:
+        total += _flush(symbol, conId, cur_day, buf)
+    log.info("Fetched %d rows for %s (%d days already on disk, skipped)", total, symbol, skipped)
 
 
-def run():
+def run(only=None, skipExisting=True):
     start = datetime.fromisoformat(bt.fetchStart)
     end   = datetime.fromisoformat(bt.fetchEnd)
+    targets = []
     for contract, conId in bt.universe:
         symbol = f"{contract.symbol}{contract.currency}"
-        log.info("Starting Dukascopy fetch: %s %s -> %s", symbol, bt.fetchStart, bt.fetchEnd)
-        fetch_pair(symbol, conId, start, end)
+        if only and symbol not in only:
+            continue
+        targets.append((symbol, conId))
+
+    log.info("Fetching %d pair(s): %s", len(targets), ", ".join(s for s, _ in targets))
+    for i, (symbol, conId) in enumerate(targets, 1):
+        log.info("[%d/%d] Dukascopy fetch: %s %s -> %s",
+                 i, len(targets), symbol, bt.fetchStart, bt.fetchEnd)
+        fetch_pair(symbol, conId, start, end, skipExisting)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
-    run()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pairs", default=None,
+                    help="comma-separated symbols, e.g. EURGBP,GBPJPY (default: all in universe)")
+    ap.add_argument("--refetch", action="store_true",
+                    help="re-download days already present on disk")
+    args = ap.parse_args()
+    only = {s.strip().upper() for s in args.pairs.split(",")} if args.pairs else None
+    run(only, skipExisting=not args.refetch)
