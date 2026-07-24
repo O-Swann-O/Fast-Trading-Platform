@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+import logSetup
+
 log = logging.getLogger(__name__)
 
 
@@ -18,8 +20,11 @@ class Reconciler:
         if not self._running:
             self._running = True
             self._task    = asyncio.create_task(self._auditLoop())
+            log.info("Reconciler started, auditing every %ds.", self._interval)
 
     def stop(self) -> None:
+        if self._running:
+            log.info("Reconciler stopped.")
         self._running = False
         if self._task:
             self._task.cancel()
@@ -65,8 +70,8 @@ class Reconciler:
                 continue
             trueQty = brokerPositions.get(contractId, 0)
             if internalQty != trueQty:
-                log.warning("Inventory drift on %s: Internal=%d, Broker=%d. Overwriting.",
-                            contractId, internalQty, trueQty)
+                log.warning("Inventory drift %s: internal %d, broker %d — overwriting",
+                            logSetup.name(contractId), internalQty, trueQty)
                 self._state.reconcilePosition(contractId, trueQty)
                 driftFound = True
                 self._fireDriftCallback("INVENTORY", contractId, internalQty, trueQty)
@@ -76,7 +81,7 @@ class Reconciler:
                 continue
             if self._inFlight(contractId):
                 continue
-            log.warning("Untracked position on %s: Broker=%d. Adding to state.", contractId, trueQty)
+            log.warning("Untracked position %s: broker %d — adding to state", logSetup.name(contractId), trueQty)
             self._state.reconcilePosition(contractId, trueQty)
             driftFound = True
             self._fireDriftCallback("INVENTORY", contractId, 0, trueQty)
@@ -95,7 +100,7 @@ class Reconciler:
                     self._fireDriftCallback("CASH", ccy, internalCash, trueCash)
 
         if not driftFound:
-            log.debug("Audit complete: State matches broker.")
+            log.info("Audit OK: %d instruments, cash matched", len(brokerPositions) or len(self._state.inventory))
 
     def _fireDriftCallback(self, driftType, asset, oldVal, newVal) -> None:
         if self.onDriftCorrected:

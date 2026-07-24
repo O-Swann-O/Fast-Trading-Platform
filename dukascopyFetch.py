@@ -141,7 +141,8 @@ def run(only=None, skipExisting=True):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
+    import logSetup
+    logSetup.setup()
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", default=None,
                     help="comma-separated symbols, e.g. EURGBP,GBPJPY (default: all in universe)")

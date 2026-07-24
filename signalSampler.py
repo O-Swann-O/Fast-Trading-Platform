@@ -84,8 +84,12 @@ class SignalSampler:
         if not self._running:
             self._running = True
             self._task    = asyncio.create_task(self._runLoop())
+            log.info("Sampler started: %d instruments every %.1fs.",
+                     self._conIds.size, self._interval)
 
     def stop(self) -> None:
+        if self._running:
+            log.info("Sampler stopped.")
         self._running = False
         if self._task:
             self._task.cancel()

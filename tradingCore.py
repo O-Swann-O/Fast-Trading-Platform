@@ -2,6 +2,7 @@ import math
 import logging
 
 import config
+import logSetup
 from contractRegistry import ContractRegistry
 from dataFeeder import DataFeeder
 from orderManager import OrderManager
@@ -32,11 +33,12 @@ class TradingCore:
         self.sampler  = None
         self.ticks    = {}
         self._source  = source
+        self._priced  = False
 
         self.feeder.onTick      = self._onTick
-        self.orders.onAccepted  = state.onAccepted
-        self.orders.onFill      = state.onFill
-        self.orders.onPartial   = state.onPartial
+        self.orders.onAccepted  = self._onAccepted
+        self.orders.onFill      = self._onFill
+        self.orders.onPartial   = self._onPartial
         self.orders.onCancelled = self._onCancelled
         self.orders.onRejected  = self._onRejected
 
@@ -46,6 +48,7 @@ class TradingCore:
             if conId:
                 qualified = self.registry.getById(conId)
                 self.state.registerInstrument(conId, qualified.symbol, qualified.currency)
+                logSetup.register(conId, f"{qualified.symbol}{qualified.currency}")
 
         conIds = [c.conId for c in self.registry.getAll()]
         if not conIds:
@@ -60,6 +63,11 @@ class TradingCore:
             staleLimit     = config.staleLimit,
         )
         self.sampler.onTargetPosition = self._onTargetPosition
+        log.info("Core ready: %d instruments, sampling every %.1fs, stale after %.1fs, "
+                 "order cap %s, position cap %s, margin floor %s",
+                 len(conIds), config.sampleInterval, config.staleLimit,
+                 f"{config.maxOrderNotional:,.0f}", f"{config.maxPositionNotional:,.0f}",
+                 f"{config.minFreeMargin:,.0f}")
         return True
 
     def start(self) -> None:
@@ -67,10 +75,14 @@ class TradingCore:
         for contract in self.registry.getAll():
             self.feeder.subscribe(contract.conId, contract)
         self.orders.start()
+        log.info("Market data subscribed for %d instruments, order tracking active.",
+                 len(self.registry.getAll()))
 
     def stop(self) -> None:
         self.orders.stop()
         self.feeder.stop()
+        self._priced = False
+        log.info("Market data unsubscribed, order tracking stopped.")
 
     async def cancelAll(self) -> None:
         await self.orders.cancelAll()
@@ -83,14 +95,19 @@ class TradingCore:
             return
         self.ticks[contractId] = ticker
         self.state.onPrice(contractId, price)
+
+        if not self._priced and not self.state.unpricedCurrencies():
+            self._priced = True
+            log.info("Book priced: %s", self.summary())
+
         if self.sampler:
             self.sampler.onTick(contractId, price)
 
     def _onTargetPosition(self, conId, targetPos, confidence, timestamp) -> None:
         age = self.clock.timestamp() - timestamp
         if age > config.maxSignalAge:
-            log.warning("Signal rejected: Contract %s signal is %ds old (limit %ds).",
-                        conId, age, config.maxSignalAge)
+            log.warning("Signal %s rejected: %ds old (limit %ds)",
+                        logSetup.name(conId), age, config.maxSignalAge)
             return
 
         assumed = (self.state.inventory.get(conId, 0)
@@ -113,14 +130,41 @@ class TradingCore:
             if not math.isnan(px):
                 estPrice = px
 
-        log.info("Signal: %s | Target: %d | Action: %s %d (Alpha: %.2f)",
-                 conId, targetPos, action, qty, confidence)
+        log.info("Signal %s: target %d -> %s %d (alpha %.2f)",
+                 logSetup.name(conId), targetPos, action, qty, confidence)
         self.orders.submitMarket(conId, contract, action, qty, estPrice)
 
     def _onCancelled(self, contractId, orderId, action, qty, estPrice) -> None:
-        log.warning("Order cancelled — contract %s order %s", contractId, orderId)
+        log.warning("Cancelled %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
         self.state.onCancelled(contractId, action, qty, estPrice)
 
     def _onRejected(self, contractId, orderId, action, qty, estPrice) -> None:
-        log.error("Order rejected — contract %s order %s", contractId, orderId)
+        log.error("Rejected %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
         self.state.onRejected(contractId, action, qty, estPrice)
+
+    def _onAccepted(self, conId, action, qty, estPrice) -> None:
+        self.state.onAccepted(conId, action, qty, estPrice)
+
+    def _onFill(self, conId, action, qty, price, estPrice) -> None:
+        self.state.onFill(conId, action, qty, price, estPrice)
+        log.info("Fill %s: %s %d @ %.5f, position now %d, equity %s",
+                 logSetup.name(conId), action, qty, price,
+                 self.state.inventory.get(conId, 0), f"{self.state.equity():,.0f}")
+
+    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty, estPrice) -> None:
+        self.state.onPartial(conId, action, filledQty, avgPrice, remainingQty, estPrice)
+        log.info("Partial fill %s: %s %d of %d @ %.5f, position now %d",
+                 logSetup.name(conId), action, filledQty, filledQty + remainingQty,
+                 avgPrice, self.state.inventory.get(conId, 0))
+
+    def summary(self) -> str:
+        open_pos = {logSetup.name(c): q for c, q in self.state.inventory.items() if q}
+        pos = ", ".join(f"{s}:{q:+d}" for s, q in sorted(open_pos.items())) or "flat"
+        unpriced = self.state.unpricedCurrencies()
+        if unpriced:
+            return (f"awaiting first price for {', '.join(unpriced)}   "
+                    f"fills {self.state.fills}   {pos}")
+        return (f"equity {self.state.equity():,.0f}   "
+                f"gross {self.state.grossNotionalUSD():,.0f}   "
+                f"free margin {self.state.freeMarginUSD():,.0f}   "
+                f"fills {self.state.fills}   {pos}")

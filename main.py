@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import config
+import logSetup
 from brokerBoundary import BrokerBoundary
 from accountManager import AccountManager
 from reconciler import Reconciler
@@ -31,8 +32,18 @@ def _tagName(tag: str) -> str:
     return tag[len("$LEDGER-"):] if tag.startswith("$LEDGER-") else tag
 
 
+_heartbeat = None
+
+
+async def _heartbeatLoop():
+    while True:
+        await asyncio.sleep(60)
+        log.info("Status: %s", core.summary())
+
+
 async def onConnected():
-    log.info("Broker Connected.")
+    global _heartbeat
+    log.info("Broker connected.")
     if not await core.setup(config.tradeUniverse):
         log.error("Core setup failed — system idle.")
         return
@@ -42,8 +53,8 @@ async def onConnected():
     core.start()
     core.sampler.start()
     reconciler.start()
-    log.info("System live: %d instruments, sampler and reconciler running.",
-             len(core.registry.getAll()))
+    _heartbeat = asyncio.create_task(_heartbeatLoop())
+    log.info("System live: %d instruments. %s", len(core.registry.getAll()), core.summary())
 
 def _safe(step, label):
     try:
@@ -53,7 +64,11 @@ def _safe(step, label):
 
 
 async def onDisconnected():
-    log.info("Broker Disconnected.")
+    global _heartbeat
+    log.info("Broker disconnected.")
+    if _heartbeat:
+        _heartbeat.cancel()
+        _heartbeat = None
     if core.sampler:
         _safe(core.sampler.stop, "sampler")
     try:
@@ -110,12 +125,14 @@ _shuttingDown = False
 
 
 async def shutdown():
-    global _shuttingDown
+    global _shuttingDown, _heartbeat
     if _shuttingDown:
         return
     _shuttingDown = True
 
     log.info("Shutdown initiated — cancelling open orders...")
+    if _heartbeat:
+        _heartbeat.cancel()
     if core.sampler:
         core.sampler.stop()
     await core.cancelAll()
@@ -135,8 +152,26 @@ async def main():
         pass
 
 
+def _checkVersions():
+    required = {
+        "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
+        "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
+        "TradingCore.summary":             hasattr(core, "summary"),
+        "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
+        "AccountManager (sync start)":     not __import__("asyncio").iscoroutinefunction(account.start),
+        "BrokerBoundary.attempt counter":  hasattr(broker, "_attempt"),
+    }
+    missing = [name for name, ok in required.items() if not ok]
+    if missing:
+        raise SystemExit(
+            "File version mismatch — these are missing: "
+            + ", ".join(missing)
+            + ". One or more project files are stale; update them together.")
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
+    logSetup.setup()
+    _checkVersions()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

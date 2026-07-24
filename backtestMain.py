@@ -5,6 +5,7 @@ import logging
 import argparse
 
 import config
+import logSetup
 import backtestConfig as bt
 from clock import SimClock
 from sessionManager import SessionManager
@@ -28,6 +29,7 @@ sim     = SimBroker(
 core    = TradingCore(sim, clock, RingBufferSource(config.signalLookback), session, state)
 
 _equity = []
+_progress = {"day": None, "ticks": 0}
 
 
 def _report():
@@ -83,12 +85,39 @@ async def run(replay, pace):
             _equity.append(state.equity())
             last_eq_ts = tick.ts
 
+        day = tick.ts.date()
+        if _progress["day"] is None:
+            _progress["day"] = day
+        elif day != _progress["day"]:
+            log.info("Replayed %s   ticks %s   %s",
+                     _progress["day"], f"{_progress['ticks']:,}", core.summary())
+            _progress["day"], _progress["ticks"] = day, 0
+        _progress["ticks"] += 1
+
+    if _progress["day"] is not None:
+        log.info("Replayed %s   ticks %s   %s",
+                 _progress["day"], f"{_progress['ticks']:,}", core.summary())
     for _ in range(4):
         await asyncio.sleep(0)
     await core.cancelAll()
     core.stop()
     if prev_ts is not None:
         _equity.append(state.equity())
+
+
+def _checkVersions():
+    required = {
+        "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
+        "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
+        "TradingCore.summary":             hasattr(core, "summary"),
+        "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
+    }
+    missing = [name for name, ok in required.items() if not ok]
+    if missing:
+        raise SystemExit(
+            "File version mismatch — these are missing: "
+            + ", ".join(missing)
+            + ". One or more project files are stale; update them together.")
 
 
 def main():
@@ -112,7 +141,8 @@ def main():
     else:
         sys.exit(f"Unknown source '{args.source}' (expected {' | '.join(bt.stores)} or a CSV path)")
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s - %(message)s")
+    logSetup.setup()
+    _checkVersions()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

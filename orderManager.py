@@ -79,8 +79,13 @@ class OrderManager:
             await asyncio.sleep(cancelWait)
 
     async def cancelAll(self):
-        for orderId in list(self._active):
+        pending = list(self._active)
+        if not pending:
+            return
+        log.info("Cancelling %d open order(s): %s", len(pending), pending)
+        for orderId in pending:
             await self.cancel(orderId)
+        log.info("Cancel pass complete.")
 
     async def _place(self, contractId, contract, order, requestedQty, estPrice):
         try:
