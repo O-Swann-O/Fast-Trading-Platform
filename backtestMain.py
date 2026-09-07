@@ -1,16 +1,19 @@
 import os
 import sys
 import asyncio
+from datetime import datetime
 import logging
 import argparse
 
 import config
 import logSetup
 import backtestConfig as bt
+from recorder import Recorder
 from clock import SimClock
 from sessionManager import SessionManager
 from fxRates import FxRates
 from stateManager import StateManager
+from myStrategy import MyStrategy
 from signalSource import RingBufferSource
 from tradingCore import TradingCore
 from simBroker import SimBroker
@@ -27,8 +30,10 @@ sim     = SimBroker(
     halfSpread = bt.halfSpread,
 )
 core    = TradingCore(sim, clock, RingBufferSource(config.signalLookback), session, state)
+#core = TradingCore(sim, clock, MyStrategy(), session, state)
 
 _equity = []
+_recorder = None
 _progress = {"day": None, "ticks": 0}
 
 
@@ -61,6 +66,7 @@ def _report():
 async def run(replay, pace):
     if not await core.setup([c for c, _ in bt.universe]):
         return
+    core.recorder = _recorder
     core.start()
     state.seed("USD", bt.startingCash)
 
@@ -82,7 +88,10 @@ async def run(replay, pace):
         core.sampler.poll()
 
         if last_eq_ts is None or (tick.ts - last_eq_ts).total_seconds() >= 60:
-            _equity.append(state.equity())
+            eq = state.equity()
+            _equity.append(eq)
+            if _recorder:
+                _recorder.equity(tick.ts, eq)
             last_eq_ts = tick.ts
 
         day = tick.ts.date()
@@ -102,7 +111,10 @@ async def run(replay, pace):
     await core.cancelAll()
     core.stop()
     if prev_ts is not None:
-        _equity.append(state.equity())
+        eq = state.equity()
+        _equity.append(eq)
+        if _recorder:
+            _recorder.equity(prev_ts, eq)
 
 
 def _checkVersions():
@@ -128,6 +140,8 @@ def main():
     ap.add_argument("--to", dest="dto", default=bt.testEnd, help="end date (inclusive)")
     ap.add_argument("--pace", type=float, default=0.0,
                     help="wall-clock pacing multiple; 0 = unthrottled (results are identical either way)")
+    ap.add_argument("--name", default=None, help="run name under results/ (default: timestamp)")
+    ap.add_argument("--no-save", action="store_true", help="do not record this run to disk")
     args = ap.parse_args()
 
     if args.source in bt.stores:
@@ -143,6 +157,13 @@ def main():
 
     logSetup.setup()
     _checkVersions()
+
+    global _recorder
+    if not args.no_save:
+        name    = args.name or datetime.now().strftime("%Y%m%d-%H%M%S")
+        runDir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", name)
+        _recorder = Recorder(runDir)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -151,6 +172,31 @@ def main():
         log.info("Interrupted — reporting partial result.")
     finally:
         _report()
+        if _recorder:
+            _recorder.finish({
+                "name":         args.name or os.path.basename(_recorder.outDir),
+                "mode":         "backtest",
+                "source":       args.source,
+                "from":         args.dfrom,
+                "to":           args.dto,
+                "startingCash": bt.startingCash,
+                "signalSource": type(core._source).__name__,
+                "instruments":  len(core.registry.getAll()),
+                "marks":        core.marks(),
+                "symbols":      core.symbols(),
+                "endEquity":    state.equity(),
+                "cashBy":       state.cashBy,
+                "positions":    {k: v for k, v in state.inventory.items() if v},
+                "config": {
+                    "sampleInterval":      config.sampleInterval,
+                    "staleLimit":          config.staleLimit,
+                    "signalLookback":      config.signalLookback,
+                    "marginRate":          config.marginRate,
+                    "maxOrderNotional":    config.maxOrderNotional,
+                    "maxPositionNotional": config.maxPositionNotional,
+                    "minFreeMargin":       config.minFreeMargin,
+                },
+            })
         pending = asyncio.all_tasks(loop)
         for t in pending:
             t.cancel()

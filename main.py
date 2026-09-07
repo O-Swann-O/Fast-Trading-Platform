@@ -1,6 +1,9 @@
 import asyncio
 import logging
 
+import os
+from datetime import datetime
+
 import config
 import logSetup
 from brokerBoundary import BrokerBoundary
@@ -12,6 +15,7 @@ from fxRates import FxRates
 from stateManager import StateManager
 from signalSource import RingBufferSource
 from tradingCore import TradingCore
+from recorder import Recorder
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +37,11 @@ def _tagName(tag: str) -> str:
 
 
 _heartbeat = None
+recorder   = Recorder(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "results",
+                 "live-" + datetime.now().strftime("%Y%m%d-%H%M%S")),
+    flushEachFill=True,
+)
 
 
 async def _heartbeatLoop():
@@ -50,6 +59,7 @@ async def onConnected():
     log.info("Contracts qualified. Starting account subscriptions...")
     account.start()
     log.info("Account subscriptions done. Subscribing market data...")
+    core.recorder = recorder
     core.start()
     core.sampler.start()
     reconciler.start()
@@ -141,6 +151,21 @@ async def shutdown():
     account.stop()
     session.stop()
     broker.stop()
+    try:
+        recorder.finish({
+            "name":         os.path.basename(recorder.outDir),
+            "mode":         "live",
+            "account":      getattr(account, "_account", ""),
+            "signalSource": type(core._source).__name__,
+            "instruments":  len(core.registry.getAll()),
+            "marks":        core.marks(),
+            "symbols":      core.symbols(),
+            "endEquity":    state.equity(),
+            "cashBy":       state.cashBy,
+            "positions":    {k: v for k, v in state.inventory.items() if v},
+        })
+    except Exception as e:
+        log.error("Could not save run record: %s", e)
     log.info("Shutdown complete.")
 
 

@@ -32,6 +32,7 @@ class TradingCore:
         self.orders   = OrderManager(ib, self.gate)
         self.sampler  = None
         self.ticks    = {}
+        self.recorder = None
         self._source  = source
         self._priced  = False
 
@@ -147,15 +148,23 @@ class TradingCore:
 
     def _onFill(self, conId, action, qty, price, estPrice) -> None:
         self.state.onFill(conId, action, qty, price, estPrice)
+        position = self.state.inventory.get(conId, 0)
+        equity   = self.state.equity()
         log.info("Fill %s: %s %d @ %.5f, position now %d, equity %s",
-                 logSetup.name(conId), action, qty, price,
-                 self.state.inventory.get(conId, 0), f"{self.state.equity():,.0f}")
+                 logSetup.name(conId), action, qty, price, position, f"{equity:,.0f}")
+        if self.recorder:
+            self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
+                               action, qty, price, position, equity)
 
     def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty, estPrice) -> None:
         self.state.onPartial(conId, action, filledQty, avgPrice, remainingQty, estPrice)
+        position = self.state.inventory.get(conId, 0)
         log.info("Partial fill %s: %s %d of %d @ %.5f, position now %d",
                  logSetup.name(conId), action, filledQty, filledQty + remainingQty,
-                 avgPrice, self.state.inventory.get(conId, 0))
+                 avgPrice, position)
+        if self.recorder:
+            self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
+                               action, filledQty, avgPrice, position, self.state.equity())
 
     def summary(self) -> str:
         open_pos = {logSetup.name(c): q for c, q in self.state.inventory.items() if q}
@@ -168,3 +177,9 @@ class TradingCore:
                 f"gross {self.state.grossNotionalUSD():,.0f}   "
                 f"free margin {self.state.freeMarginUSD():,.0f}   "
                 f"fills {self.state.fills}   {pos}")
+
+    def marks(self) -> dict:
+        return {int(c): float(p) for c, p in self.state.fx._prices.items()}
+
+    def symbols(self) -> dict:
+        return {int(c.conId): f"{c.symbol}{c.currency}" for c in self.registry.getAll()}

@@ -14,9 +14,13 @@ import dataStore
 log = logging.getLogger(__name__)
 
 BASE     = "https://datafeed.dukascopy.com/datafeed"
-PACE     = 0.1
+PACE     = 0.75
 RESAMPLE = 1
 _REC     = struct.Struct(">IIIff")
+
+
+class DownloadFailed(Exception):
+    pass
 
 
 def _scale(symbol):
@@ -30,10 +34,10 @@ def _url(symbol, dt):
 
 def _download(url):
     last = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -41,9 +45,8 @@ def _download(url):
             last = e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last = e
-        time.sleep(2.0 * (attempt + 1))
-    log.warning("download failed %s: %s", url, last)
-    return None
+        time.sleep(3.0 * (attempt + 1))
+    raise DownloadFailed(f"{url}: {last}")
 
 
 def _decompress(raw):
@@ -86,16 +89,22 @@ def _flush(symbol, conId, day, buf):
 def fetch_pair(symbol, conId, start, end, skipExisting=True):
     scale   = _scale(symbol)
     dt      = start.replace(minute=0, second=0, microsecond=0)
-    cur_day = None
-    buf     = {}
-    total   = 0
-    skipped = 0
+    cur_day  = None
+    buf      = {}
+    total    = 0
+    skipped  = 0
+    holes    = 0
+    dayHoles = 0
     while dt < end:
         if cur_day is None:
             cur_day = dt.date()
         if dt.date() != cur_day:
-            total += _flush(symbol, conId, cur_day, buf)
-            buf, cur_day = {}, dt.date()
+            if dayHoles:
+                log.warning("%s: %s INCOMPLETE (%d hour(s) failed) - not written, will retry",
+                            symbol, cur_day.isoformat(), dayHoles)
+            else:
+                total += _flush(symbol, conId, cur_day, buf)
+            buf, cur_day, dayHoles = {}, dt.date(), 0
 
         if dt.weekday() == 5:
             dt = datetime.combine(dt.date() + timedelta(days=1), datetime.min.time())
@@ -108,7 +117,14 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
             buf, cur_day = {}, None
             continue
 
-        raw = _download(_url(symbol, dt))
+        try:
+            raw = _download(_url(symbol, dt))
+        except DownloadFailed as e:
+            log.warning("hour unavailable, %s will not be written: %s", dt.date(), e)
+            holes += 1
+            dayHoles += 1
+            raw = None
+
         if raw:
             try:
                 for ts, bid, ask in _decode_hour(raw, dt, scale):
@@ -116,10 +132,18 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
                         buf[_floor(ts, RESAMPLE)] = (bid, ask)
             except lzma.LZMAError as e:
                 log.warning("decode failed %s: %s", _url(symbol, dt), e)
+                holes += 1
+                dayHoles += 1
         time.sleep(PACE)
         dt += timedelta(hours=1)
     if cur_day is not None:
-        total += _flush(symbol, conId, cur_day, buf)
+        if dayHoles:
+            log.warning("%s: %s INCOMPLETE (%d hour(s) failed) - not written, will retry",
+                        symbol, cur_day.isoformat(), dayHoles)
+        else:
+            total += _flush(symbol, conId, cur_day, buf)
+    if holes:
+        log.warning("%s: %d hour(s) failed; affected days left unwritten for retry.", symbol, holes)
     log.info("Fetched %d rows for %s (%d days already on disk, skipped)", total, symbol, skipped)
 
 

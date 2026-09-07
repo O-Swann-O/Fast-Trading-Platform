@@ -9,7 +9,6 @@ from signalSource import SignalSource
 
 log = logging.getLogger(__name__)
 
-
 class SignalSampler:
 
     def __init__(self, source: SignalSource, clock: Clock, conIds: list,
