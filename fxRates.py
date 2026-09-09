@@ -12,9 +12,9 @@ class FxRates:
 
     def registerInstrument(self, conId: int, base: str, quote: str) -> None:
         self._meta[conId] = (base, quote)
-        if base != "USD" and base not in self._ccyPair:
+        if quote == "USD" and base not in self._ccyPair:
             self._ccyPair[base] = (conId, False)
-        if quote != "USD" and quote not in self._ccyPair:
+        if base == "USD" and quote not in self._ccyPair:
             self._ccyPair[quote] = (conId, True)
 
     def onPrice(self, conId: int, price: float) -> None:

@@ -145,6 +145,14 @@ async def run(replay, pace):
             _recorder.equity(prev_ts, eq)
 
 
+def _fxMappingOk() -> bool:
+    probe = FxRates()
+    probe.registerInstrument(1, "EUR", "USD")
+    probe.registerInstrument(2, "EUR", "GBP")
+    probe.onPrice(1, 1.14)
+    probe.onPrice(2, 0.85)
+    return probe.usdRate("EUR") == 1.14 and probe.usdRate("GBP") is None
+
 def _checkVersions():
     required = {
         "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
@@ -154,6 +162,7 @@ def _checkVersions():
         "TradingCore.summary":             hasattr(core, "summary"),
         "OrderManager.pending":            hasattr(type(core.orders), "pending"),
         "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
+        "FxRates cross-pair mapping":      _fxMappingOk(),
     }
     missing = [name for name, ok in required.items() if not ok]
     if missing:
