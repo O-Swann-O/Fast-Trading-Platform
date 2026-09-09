@@ -13,58 +13,85 @@ from clock import SimClock
 from sessionManager import SessionManager
 from fxRates import FxRates
 from stateManager import StateManager
-from myStrategy import MyStrategy
 from signalSource import RingBufferSource
 from tradingCore import TradingCore
 from simBroker import SimBroker
 import barReplay
+import dataStore
 
 log = logging.getLogger(__name__)
 
-clock   = SimClock()
-session = SessionManager(clock, config.tradingHoursUTC, forceActive=bt.forceSessionActive)
-fx      = FxRates()
-state   = StateManager(fx, config.marginRate)
-sim     = SimBroker(
-    conIdMap   = {f"{c.symbol}{c.currency}": cid for c, cid in bt.universe},
-    halfSpread = bt.halfSpread,
-)
-core    = TradingCore(sim, clock, RingBufferSource(config.signalLookback), session, state)
-#core = TradingCore(sim, clock, MyStrategy(), session, state)
+clock   = None
+session = None
+fx      = None
+state   = None
+sim     = None
+core    = None
 
-_equity = []
-_recorder = None
-_progress = {"day": None, "ticks": 0}
+universe   = None
+_recorder  = None
+_progress  = {"day": None, "ticks": 0}
+_equity    = {"n": 0, "first": None, "last": None, "peak": None, "maxdd": 0.0}
+
+
+def makeSignalSource():
+    return RingBufferSource(config.signalLookback)
+
+
+def build(source: str) -> None:
+    global clock, session, fx, state, sim, core, universe
+
+    universe, halfSpread = bt.universeFor(source)
+    profile = bt.profileFor(source)
+
+    clock   = SimClock()
+    session = SessionManager(clock, profile["tradingHoursUTC"],
+                             forceActive=bt.forceSessionActive)
+    fx      = FxRates()
+    state   = StateManager(fx, config.marginRate)
+    sim     = SimBroker(
+        conIdMap   = {f"{c.symbol}{c.currency}": cid for c, cid in universe},
+        halfSpread = halfSpread,
+    )
+    core    = TradingCore(sim, clock, makeSignalSource(), session, state,
+                          sampleInterval=profile["sampleInterval"])
+
+    log.info("Universe '%s': %d instruments, sampling every %.0fs, hours %s",
+             source, len(universe), profile["sampleInterval"],
+             profile["tradingHoursUTC"] or "FX week")
+
+
+def _sampleEquity(value: float) -> None:
+    e = _equity
+    e["n"] += 1
+    if e["first"] is None:
+        e["first"] = e["peak"] = value
+    e["last"] = value
+    if value > e["peak"]:
+        e["peak"] = value
+    elif e["peak"]:
+        e["maxdd"] = max(e["maxdd"], (e["peak"] - value) / e["peak"])
 
 
 def _report():
-    if len(_equity) < 2:
+    e = _equity
+    if e["n"] < 2:
         print("\nNo equity samples recorded (need >=2).")
         return
-    start, end = _equity[0], _equity[-1]
-    rets = [(_equity[i] - _equity[i-1]) / _equity[i-1]
-            for i in range(1, len(_equity)) if _equity[i-1]]
-    mean = sum(rets) / len(rets) if rets else 0.0
-    var  = sum((r - mean) ** 2 for r in rets) / len(rets) if rets else 0.0
-    std  = var ** 0.5
-    sharpe = (mean / std) if std else 0.0
-    peak, maxdd = _equity[0], 0.0
-    for v in _equity:
-        peak  = max(peak, v)
-        maxdd = max(maxdd, (peak - v) / peak if peak else 0.0)
+    start, end = e["first"], e["last"]
     print("\n================ BACKTEST RESULT ================")
-    print(f"  equity samples : {len(_equity)}")
-    print(f"  fills          : {state.fills}")
+    print(f"  equity samples : {e['n']:,}")
+    print(f"  fills          : {state.fills:,}")
     print(f"  start equity   : {start:,.2f}")
     print(f"  end equity     : {end:,.2f}")
     print(f"  total return   : {(end/start - 1)*100:+.3f}%")
-    print(f"  max drawdown   : {maxdd*100:.3f}%")
-    print(f"  per-sample Sharpe: {sharpe:.4f}  (NOT annualised)")
+    print(f"  max drawdown   : {e['maxdd']*100:.3f}%")
+    print("  full statistics: python analyze.py")
     print("=================================================")
 
 
 async def run(replay, pace):
-    if not await core.setup([c for c, _ in bt.universe]):
+    if not await core.setup([c for c, _ in universe]):
         return
     core.recorder = _recorder
     core.start()
@@ -74,11 +101,12 @@ async def run(replay, pace):
 
     prev_ts    = None
     last_eq_ts = None
+    orders = core.orders
     for tick in replay:
         if pace > 0 and prev_ts is not None:
             dt = (tick.ts - prev_ts).total_seconds() / pace
             await asyncio.sleep(dt if dt > 0 else 0)
-        else:
+        elif orders.pending:
             await asyncio.sleep(0)
         prev_ts = tick.ts
 
@@ -89,7 +117,7 @@ async def run(replay, pace):
 
         if last_eq_ts is None or (tick.ts - last_eq_ts).total_seconds() >= 60:
             eq = state.equity()
-            _equity.append(eq)
+            _sampleEquity(eq)
             if _recorder:
                 _recorder.equity(tick.ts, eq)
             last_eq_ts = tick.ts
@@ -112,7 +140,7 @@ async def run(replay, pace):
     core.stop()
     if prev_ts is not None:
         eq = state.equity()
-        _equity.append(eq)
+        _sampleEquity(eq)
         if _recorder:
             _recorder.equity(prev_ts, eq)
 
@@ -121,7 +149,10 @@ def _checkVersions():
     required = {
         "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
         "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
+        "StateManager.applyFill":          hasattr(state, "applyFill"),
+        "StateManager.releasePending":     hasattr(state, "releasePending"),
         "TradingCore.summary":             hasattr(core, "summary"),
+        "OrderManager.pending":            hasattr(type(core.orders), "pending"),
         "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
     }
     missing = [name for name, ok in required.items() if not ok]
@@ -144,18 +175,28 @@ def main():
     ap.add_argument("--no-save", action="store_true", help="do not record this run to disk")
     args = ap.parse_args()
 
+    logSetup.setup()
+
+    if args.dfrom > args.dto:
+        sys.exit(f"Empty range: --from {args.dfrom} is after --to {args.dto}")
+
     if args.source in bt.stores:
         root = bt.stores[args.source]
         if not os.path.isdir(root):
             sys.exit(f"Store '{args.source}' not found at {root}")
-        conIds = [cid for _, cid in bt.universe]
+        build(args.source)
+        conIds = [cid for _, cid in universe]
+        if not dataStore.has_data(root, conIds, args.dfrom, args.dto):
+            sys.exit(f"No data in store '{args.source}' for {args.dfrom} .. {args.dto} "
+                     f"across {len(conIds)} instrument(s). "
+                     f"Check the date range, or that the store matches the universe.")
         replay = barReplay.load_duckdb(root, conIds, args.dfrom, args.dto)
     elif os.path.isfile(args.source):
+        build("dukascopy")
         replay = barReplay.load_csv(args.source)
     else:
         sys.exit(f"Unknown source '{args.source}' (expected {' | '.join(bt.stores)} or a CSV path)")
 
-    logSetup.setup()
     _checkVersions()
 
     global _recorder

@@ -1,4 +1,6 @@
 import os
+from datetime import time
+
 from ib_async import Forex
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +55,27 @@ stores = {
     "dukascopy": dataRoot,
     "ibkr":      ibkrDataRoot,
 }
+
+profiles = {
+    "dukascopy": {"tradingHoursUTC": None,                        "sampleInterval": 5.0},
+    "ibkr":      {"tradingHoursUTC": (time(14, 30), time(21, 0)), "sampleInterval": 300.0},
+}
+
+
+def universeFor(source):
+    if source == "ibkr":
+        try:
+            import stockUniverse
+        except ImportError:
+            raise SystemExit(
+                "stockUniverse.py not found. Generate it first:\n"
+                "    python stockFetch.py --qualify-only")
+        return stockUniverse.universe, stockUniverse.halfSpread
+    return universe, halfSpread
+
+
+def profileFor(source):
+    return profiles.get(source, profiles["dukascopy"])
 
 fetchStart = "2024-01-01"
 fetchEnd   = "2026-06-16"

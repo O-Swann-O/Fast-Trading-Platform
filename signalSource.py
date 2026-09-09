@@ -15,6 +15,7 @@ class RingBufferSource(SignalSource):
         self._buf     = None
         self._head    = 0
         self._count   = 0
+        self._lastIds = None
 
     def _reset(self, conIds: np.ndarray) -> None:
         self._keys  = conIds.astype(np.uint32).copy()
@@ -23,13 +24,14 @@ class RingBufferSource(SignalSource):
         self._count = 0
 
     def compute(self, conIds: np.ndarray, prices: np.ndarray):
-        conIds = np.asarray(conIds)
+        if conIds is not self._lastIds:
+            conIds = np.asarray(conIds)
+            if (self._keys is None
+                    or self._keys.size != conIds.size
+                    or not np.array_equal(self._keys, conIds.astype(np.uint32))):
+                self._reset(conIds)
+            self._lastIds = conIds
         prices = np.asarray(prices, dtype=np.float32)
-
-        if (self._keys is None
-                or self._keys.size != conIds.size
-                or not np.array_equal(self._keys, conIds.astype(np.uint32))):
-            self._reset(conIds)
 
         self._buf[:, self._head] = prices
         self._head  = (self._head + 1) % self.lookback

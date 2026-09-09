@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 class TradingCore:
 
-    def __init__(self, ib, clock, source, session, state) -> None:
+    def __init__(self, ib, clock, source, session, state, sampleInterval=None) -> None:
         self.clock    = clock
         self.state    = state
         self.session  = session
@@ -34,10 +34,12 @@ class TradingCore:
         self.ticks    = {}
         self.recorder = None
         self._source  = source
+        self._interval = config.sampleInterval if sampleInterval is None else sampleInterval
         self._priced  = False
 
         self.feeder.onTick      = self._onTick
-        self.orders.onAccepted  = self._onAccepted
+        self.orders.onAccepted  = state.onAccepted
+        self.orders.onReleased  = state.releasePending
         self.orders.onFill      = self._onFill
         self.orders.onPartial   = self._onPartial
         self.orders.onCancelled = self._onCancelled
@@ -60,13 +62,13 @@ class TradingCore:
             source         = self._source,
             clock          = self.clock,
             conIds         = conIds,
-            sampleInterval = config.sampleInterval,
+            sampleInterval = self._interval,
             staleLimit     = config.staleLimit,
         )
         self.sampler.onTargetPosition = self._onTargetPosition
         log.info("Core ready: %d instruments, sampling every %.1fs, stale after %.1fs, "
                  "order cap %s, position cap %s, margin floor %s",
-                 len(conIds), config.sampleInterval, config.staleLimit,
+                 len(conIds), self._interval, config.staleLimit,
                  f"{config.maxOrderNotional:,.0f}", f"{config.maxPositionNotional:,.0f}",
                  f"{config.minFreeMargin:,.0f}")
         return True
@@ -137,17 +139,12 @@ class TradingCore:
 
     def _onCancelled(self, contractId, orderId, action, qty, estPrice) -> None:
         log.warning("Cancelled %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
-        self.state.onCancelled(contractId, action, qty, estPrice)
 
     def _onRejected(self, contractId, orderId, action, qty, estPrice) -> None:
         log.error("Rejected %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
-        self.state.onRejected(contractId, action, qty, estPrice)
 
-    def _onAccepted(self, conId, action, qty, estPrice) -> None:
-        self.state.onAccepted(conId, action, qty, estPrice)
-
-    def _onFill(self, conId, action, qty, price, estPrice) -> None:
-        self.state.onFill(conId, action, qty, price, estPrice)
+    def _onFill(self, conId, action, qty, price) -> None:
+        self.state.applyFill(conId, action, qty, price)
         position = self.state.inventory.get(conId, 0)
         equity   = self.state.equity()
         log.info("Fill %s: %s %d @ %.5f, position now %d, equity %s",
@@ -156,8 +153,8 @@ class TradingCore:
             self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
                                action, qty, price, position, equity)
 
-    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty, estPrice) -> None:
-        self.state.onPartial(conId, action, filledQty, avgPrice, remainingQty, estPrice)
+    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty) -> None:
+        self.state.applyFill(conId, action, filledQty, avgPrice)
         position = self.state.inventory.get(conId, 0)
         log.info("Partial fill %s: %s %d of %d @ %.5f, position now %d",
                  logSetup.name(conId), action, filledQty, filledQty + remainingQty,

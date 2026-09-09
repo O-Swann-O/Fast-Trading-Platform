@@ -181,7 +181,10 @@ def _checkVersions():
     required = {
         "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
         "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
+        "StateManager.applyFill":          hasattr(state, "applyFill"),
+        "StateManager.releasePending":     hasattr(state, "releasePending"),
         "TradingCore.summary":             hasattr(core, "summary"),
+        "OrderManager.pending":            hasattr(type(core.orders), "pending"),
         "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
         "AccountManager (sync start)":     not __import__("asyncio").iscoroutinefunction(account.start),
         "BrokerBoundary.attempt counter":  hasattr(broker, "_attempt"),

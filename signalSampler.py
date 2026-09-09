@@ -9,6 +9,7 @@ from signalSource import SignalSource
 
 log = logging.getLogger(__name__)
 
+
 class SignalSampler:
 
     def __init__(self, source: SignalSource, clock: Clock, conIds: list,
@@ -26,6 +27,8 @@ class SignalSampler:
         self._latestMid  = np.full(n, np.nan, dtype=np.float32)
         self._lastUpdate = np.full(n, -np.inf)
         self._nextSample = None
+        self._epochOf    = None
+        self._epochValue = 0.0
 
         self.onTargetPosition = None
         self._running = False
@@ -42,9 +45,11 @@ class SignalSampler:
         now = self._clock.now()
         if now is None:
             return -np.inf
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        return now.timestamp()
+        if now is not self._epochOf:
+            t = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+            self._epochOf    = now
+            self._epochValue = t.timestamp()
+        return self._epochValue
 
     def poll(self) -> None:
         if self._clock.now() is None:

@@ -64,6 +64,14 @@ class Reconciler:
         brokerPositions = {p.contract.conId: int(p.position)
                            for p in self._ib.positions() if p.contract}
 
+        held = [c for c, q in self._state.inventory.items() if q]
+        if held and not brokerPositions:
+            log.error("Broker reports no positions while the book holds %d instrument(s). "
+                      "Treating this as a position-feed failure, not as truth; "
+                      "positions left untouched. Check Virtual FX Tracking in account settings.",
+                      len(held))
+            return
+
         for contractId, internalQty in list(self._state.inventory.items()):
             if self._inFlight(contractId):
                 log.debug("Reconcile skipped %s: order in flight.", contractId)

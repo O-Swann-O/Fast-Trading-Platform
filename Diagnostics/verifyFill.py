@@ -1,6 +1,10 @@
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = _HERE if os.path.exists(os.path.join(_HERE, "backtestConfig.py")) else os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 import asyncio
 import logging

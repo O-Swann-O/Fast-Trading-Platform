@@ -1,13 +1,18 @@
 import os
 import sys
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = _HERE if os.path.exists(os.path.join(_HERE, "backtestConfig.py")) else os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import json
 import argparse
 import urllib.request
 from html.parser import HTMLParser
 
 URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sp500Symbols.json")
+OUT = os.path.join(_ROOT, "sp500Symbols.json")
 
 
 class _ConstituentParser(HTMLParser):

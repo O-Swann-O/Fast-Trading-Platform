@@ -44,6 +44,20 @@ def query(root, conIds, start, end):
     return con.execute(sql, [*conIds, start, end])
 
 
+def has_data(root, conIds, start, end):
+    con = duckdb.connect()
+    placeholders = ",".join("?" for _ in conIds)
+    sql = f"""
+        SELECT 1
+        FROM read_parquet('{_glob(root)}')
+        WHERE conId IN ({placeholders})
+          AND time >= CAST(? AS TIMESTAMP)
+          AND time <  CAST(? AS DATE) + INTERVAL 1 DAY
+        LIMIT 1
+    """
+    return con.execute(sql, [*conIds, start, end]).fetchone() is not None
+
+
 def export_csv(root, conIds, start, end, out_path):
     con = duckdb.connect()
     placeholders = ",".join("?" for _ in conIds)

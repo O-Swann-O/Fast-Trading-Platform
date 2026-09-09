@@ -21,6 +21,11 @@ class OrderManager:
         self.onPartial   = None
         self.onCancelled = None
         self.onRejected  = None
+        self.onReleased  = None
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._tasks)
 
     def start(self):
         self._ib.orderStatusEvent += self._onOrderStatus
@@ -87,6 +92,13 @@ class OrderManager:
             await self.cancel(orderId)
         log.info("Cancel pass complete.")
 
+    def _release(self, contractId, action, requestedQty, estPrice) -> None:
+        if self.onReleased:
+            try:
+                self.onReleased(contractId, action, requestedQty, estPrice)
+            except Exception as e:
+                log.error("Release callback failed for contract %s: %s", contractId, e)
+
     async def _place(self, contractId, contract, order, requestedQty, estPrice):
         try:
             trade = self._ib.placeOrder(contract, order)
@@ -94,6 +106,7 @@ class OrderManager:
             log.error("Order placement failed for contract %s: %s", contractId, e)
             if self.onRejected:
                 self.onRejected(contractId, None, order.action, requestedQty, estPrice)
+            self._release(contractId, order.action, requestedQty, estPrice)
             return
 
         orderId  = trade.order.orderId
@@ -105,6 +118,7 @@ class OrderManager:
         finally:
             self._active.pop(orderId, None)
             self._events.pop(orderId, None)
+            self._release(contractId, order.action, requestedQty, estPrice)
 
     async def _awaitTerminal(self, trade, contractId, requestedQty, estPrice):
         orderId = trade.order.orderId
@@ -121,7 +135,6 @@ class OrderManager:
                         trade.order.action,
                         int(trade.orderStatus.filled),
                         float(trade.orderStatus.avgFillPrice),
-                        estPrice
                     )
                 return
 
@@ -134,7 +147,6 @@ class OrderManager:
                         filled,
                         float(trade.orderStatus.avgFillPrice),
                         int(requestedQty) - filled,
-                        estPrice
                     )
                 elif self.onCancelled:
                     self.onCancelled(contractId, orderId, trade.order.action, requestedQty, estPrice)
@@ -160,7 +172,6 @@ class OrderManager:
                     filled,
                     float(trade.orderStatus.avgFillPrice),
                     int(requestedQty) - filled,
-                    estPrice
                 )
             elif self.onCancelled:
                 self.onCancelled(contractId, orderId, trade.order.action, requestedQty, estPrice)

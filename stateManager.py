@@ -64,28 +64,17 @@ class StateManager:
         self.pending_inventory[conId] = self.pending_inventory.get(conId, 0) + signed
         self.reservedMargin += self.fx.estNotionalUSD(conId, qty, estPrice) * self.marginRate
 
-    def _release(self, conId, action, qty, estPrice) -> None:
+    def releasePending(self, conId, action, qty, estPrice) -> None:
         signed = qty if action == "BUY" else -qty
         self.pending_inventory[conId] = self.pending_inventory.get(conId, 0) - signed
         self.reservedMargin -= self.fx.estNotionalUSD(conId, qty, estPrice) * self.marginRate
 
-    def onFill(self, conId, action, qty, price, estPrice) -> None:
+    def applyFill(self, conId, action, qty, price) -> None:
         quote  = self.fx.quoteOf(conId)
         signed = qty if action == "BUY" else -qty
         self.inventory[conId] = self.inventory.get(conId, 0) + signed
         self.cashBy[quote]    = self.cashBy.get(quote, 0.0) - signed * price
-        self._release(conId, action, qty, estPrice)
         self.fills += 1
-
-    def onPartial(self, conId, action, filledQty, avgPrice, remainingQty, estPrice) -> None:
-        self.onFill(conId, action, filledQty, avgPrice, estPrice)
-        self._release(conId, action, remainingQty, estPrice)
-
-    def onCancelled(self, conId, action, qty, estPrice) -> None:
-        self._release(conId, action, qty, estPrice)
-
-    def onRejected(self, conId, action, qty, estPrice) -> None:
-        self._release(conId, action, qty, estPrice)
 
     def reconcilePosition(self, conId: int, qty: int) -> None:
         self.inventory[conId] = qty

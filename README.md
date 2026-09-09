@@ -86,6 +86,12 @@ unbreakable risk and execution firewall for any future mathematical signal gener
    startup, the system cannot and will not trade it.
 6. **Time Comes From The Clock:** Never call `datetime.now()` or `time.time()` in trading logic. Use
    the injected clock, or the backtest silently diverges from live.
+7. **Release Pending Exactly Once:** Reserved margin and pending inventory are released by
+   `OrderManager.onReleased`, fired once when an order's lifecycle ends. Fill, cancel and reject
+   callbacks must never release, or a broker that reports an order both rejected and filled will
+   corrupt the book.
+8. **Absence Is Not Truth:** A broker feed returning nothing is a failure, not a flat account. The
+   Reconciler refuses to overwrite positions when the position feed is empty but the book is not.
 
 ---
 
@@ -154,14 +160,34 @@ immediately. Deleting it resumes. No restart required.
 ## 8. RUNNING
 
 ```
-python main.py                                  # live / paper
-python backtestMain.py --from DATE --to DATE    # backtest
-python storeAudit.py                            # tick store coverage report
-python verifyFill.py                            # force one fill, audit the book
+pip install -r requirements.txt
+
+python main.py                                            # live / paper
+python backtestMain.py --from DATE --to DATE --name RUN   # backtest, recorded to results/RUN
+python analyze.py                                         # statistics for the newest run
+python analyze.py --index --sort sharpe                   # browsable index of every run
 ```
 
-Backtest data source is selected with `--source`, which accepts any store named in
-`backtestConfig.stores` or a path to a tick CSV.
+`--source` selects the tick store *and* the instrument universe together, so the two can never
+disagree. It accepts any key in `backtestConfig.stores` or a path to a tick CSV. Each source also
+carries a profile — trading hours and sampling interval — because those differ by asset class.
+A range with no data fails immediately rather than replaying to an empty result.
+
+Every backtest is recorded to `results/<name>/`: `fills.csv` written as trades happen,
+`equity.parquet`, and `meta.json` holding the config that produced the run. `analyze.py` reads
+those files and never imports the trading system, so metrics can change without any risk to the
+execution path.
+
+### Data
+
+```
+python dukascopyFetch.py                    # FX; skips days already on disk, never writes a partial day
+python stockFetch.py --qualify-only         # write stockUniverse.py
+python stockFetch.py --limit 100            # equity bars into the ibkr store
+```
+
+Diagnostics live in `Diagnostics/` and run from either the project root or that folder: store
+coverage, gap detection, forced-fill audit, IB account probe.
 
 ---
 
@@ -176,5 +202,7 @@ Backtest data source is selected with `--source`, which accepts any store named 
 4. **Optimistic Fills:** `SimBroker` crosses the real historical spread but does not model partial
    fills, rejections, or variable latency. Adequate for retail FX size; revisit if strategy
    behaviour becomes fill-sensitive.
-5. **Margin Assumption:** Position sizing assumes the account carries the margin permissions implied
-   by `config.marginRate`.
+5. **Minimum Order Size:** IDEALPRO routes orders under roughly 20,000 base-currency units as odd
+   lots at worse prices. The framework does not enforce a floor; strategies must size above it.
+6. **Margin Assumption:** Position sizing assumes the account carries the margin permissions implied
+   by `config.marginRate`, which is a configured estimate rather than a broker-reported figure.
