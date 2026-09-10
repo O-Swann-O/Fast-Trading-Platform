@@ -52,9 +52,13 @@ class StateManager:
                     total += val
         return total
 
-    def unpricedCurrencies(self) -> list:
+    def pendingCurrencies(self) -> list:
         return sorted(ccy for ccy, amount in self.cashBy.items()
-                      if amount and self.fx.usdRate(ccy) is None)
+                      if amount and self.fx.canConvert(ccy) and self.fx.usdRate(ccy) is None)
+
+    def unconvertibleCurrencies(self) -> list:
+        return sorted(ccy for ccy, amount in self.cashBy.items()
+                      if amount and not self.fx.canConvert(ccy))
 
     def freeMarginUSD(self) -> float:
         return self.equity() - self.grossNotionalUSD() * self.marginRate - self.reservedMargin

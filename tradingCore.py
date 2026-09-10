@@ -34,6 +34,7 @@ class TradingCore:
         self.ticks    = {}
         self.recorder = None
         self._source  = source
+        self._blocked = {}
         self._interval = config.sampleInterval if sampleInterval is None else sampleInterval
         self._priced  = False
 
@@ -99,7 +100,7 @@ class TradingCore:
         self.ticks[contractId] = ticker
         self.state.onPrice(contractId, price)
 
-        if not self._priced and not self.state.unpricedCurrencies():
+        if not self._priced and not self.state.pendingCurrencies():
             self._priced = True
             log.info("Book priced: %s", self.summary())
 
@@ -118,6 +119,12 @@ class TradingCore:
         delta = targetPos - assumed
         if delta == 0:
             return
+
+        blockedUntil = self._blocked.get(conId)
+        if blockedUntil is not None:
+            if self.clock.timestamp() < blockedUntil:
+                return
+            del self._blocked[conId]
 
         contract = self.registry.getById(conId)
         if not contract:
@@ -141,9 +148,12 @@ class TradingCore:
         log.warning("Cancelled %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
 
     def _onRejected(self, contractId, orderId, action, qty, estPrice) -> None:
-        log.error("Rejected %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
+        self._blocked[contractId] = self.clock.timestamp() + config.rejectCooldown
+        log.error("Rejected %s order %s (%s %d) — suppressing new orders for %ds",
+                  logSetup.name(contractId), orderId, action, qty, config.rejectCooldown)
 
     def _onFill(self, conId, action, qty, price) -> None:
+        self._blocked.pop(conId, None)
         self.state.applyFill(conId, action, qty, price)
         position = self.state.inventory.get(conId, 0)
         equity   = self.state.equity()
@@ -166,11 +176,13 @@ class TradingCore:
     def summary(self) -> str:
         open_pos = {logSetup.name(c): q for c, q in self.state.inventory.items() if q}
         pos = ", ".join(f"{s}:{q:+d}" for s, q in sorted(open_pos.items())) or "flat"
-        unpriced = self.state.unpricedCurrencies()
-        if unpriced:
-            return (f"awaiting first price for {', '.join(unpriced)}   "
+        pending = self.state.pendingCurrencies()
+        if pending:
+            return (f"awaiting first price for {', '.join(pending)}   "
                     f"fills {self.state.fills}   {pos}")
-        return (f"equity {self.state.equity():,.0f}   "
+        excluded = self.state.unconvertibleCurrencies()
+        note = f" (excl {', '.join(excluded)})" if excluded else ""
+        return (f"equity {self.state.equity():,.0f}{note}   "
                 f"gross {self.state.grossNotionalUSD():,.0f}   "
                 f"free margin {self.state.freeMarginUSD():,.0f}   "
                 f"fills {self.state.fills}   {pos}")

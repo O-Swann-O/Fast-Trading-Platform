@@ -30,6 +30,7 @@ reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
 CASH_TAG = "CashBalance"
 _seededCurrencies = set()
+_seedingDone      = False
 
 
 def _tagName(tag: str) -> str:
@@ -57,10 +58,13 @@ async def onConnected():
         log.error("Core setup failed — system idle.")
         return
     log.info("Contracts qualified. Starting account subscriptions...")
+    global _seedingDone
     account.start()
+    _seedingDone = True
     log.info("Account subscriptions done. Subscribing market data...")
     core.recorder = recorder
     core.start()
+    reconciler.auditNow()
     core.sampler.start()
     reconciler.start()
     _heartbeat = asyncio.create_task(_heartbeatLoop())
@@ -97,6 +101,8 @@ async def onSessionEnd():
     await core.cancelAll()
 
 def onAccountUpdate(tag, currency, value):
+    if _seedingDone:
+        return
     if _tagName(tag) != CASH_TAG:
         return
     if currency in ("", "BASE") or currency in _seededCurrencies:
@@ -105,8 +111,7 @@ def onAccountUpdate(tag, currency, value):
         return
     state.seed(currency, value)
     _seededCurrencies.add(currency)
-    convertible = currency == "USD" or currency in state.fx._ccyPair
-    if convertible:
+    if state.fx.canConvert(currency):
         log.info("Book seeded: %s %.2f", currency, value)
     else:
         log.warning("Seeded %s %.2f but no traded pair can convert it to USD; "
@@ -114,7 +119,8 @@ def onAccountUpdate(tag, currency, value):
 
 def onPositionUpdate(contractId, position):
     if contractId not in state.inventory and position != 0:
-        state.reconcilePosition(contractId, position)
+        state.reconcilePosition(contractId, int(position))
+        log.info("Position seeded: %s %d", logSetup.name(contractId), int(position))
 
 def onDriftCorrected(driftType, asset, oldVal, newVal):
     if driftType == "INVENTORY":
@@ -187,7 +193,9 @@ def _fxMappingOk() -> bool:
 
 def _checkVersions():
     required = {
-        "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
+        "StateManager.pendingCurrencies":   hasattr(state, "pendingCurrencies"),
+        "FxRates.canConvert":              hasattr(state.fx, "canConvert"),
+        "Reconciler.auditNow":             hasattr(reconciler, "auditNow"),
         "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
         "StateManager.applyFill":          hasattr(state, "applyFill"),
         "StateManager.releasePending":     hasattr(state, "releasePending"),
@@ -195,7 +203,7 @@ def _checkVersions():
         "OrderManager.pending":            hasattr(type(core.orders), "pending"),
         "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
         "FxRates cross-pair mapping":      _fxMappingOk(),
-        "AccountManager (sync start)":     not __import__("asyncio").iscoroutinefunction(account.start),
+        "AccountManager (sync start)":     not __import__("inspect").iscoroutinefunction(account.start),
         "BrokerBoundary.attempt counter":  hasattr(broker, "_attempt"),
     }
     missing = [name for name, ok in required.items() if not ok]

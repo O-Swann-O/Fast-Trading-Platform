@@ -26,6 +26,9 @@ class FxRates:
     def quoteOf(self, conId: int) -> str:
         return self._meta[conId][1]
 
+    def canConvert(self, ccy: str) -> bool:
+        return ccy == "USD" or ccy in self._ccyPair
+
     def usdRate(self, ccy: str):
         if ccy == "USD":
             return 1.0

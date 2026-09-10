@@ -36,6 +36,9 @@ maxTickJump         = 0.05
 # --- Reconciler ---
 reconcileInterval = 300
 
+# --- Order flow ---
+rejectCooldown = 60
+
 # --- Universe ---
 tradeUniverse = [
     Forex("EURUSD", "IDEALPRO"),

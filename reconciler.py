@@ -30,6 +30,12 @@ class Reconciler:
             self._task.cancel()
             self._task = None
 
+    def auditNow(self) -> None:
+        try:
+            self._reconcile()
+        except Exception as e:
+            log.error("Startup audit failed: %s", e)
+
     async def _auditLoop(self) -> None:
         while self._running:
             await asyncio.sleep(self._interval)

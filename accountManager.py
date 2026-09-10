@@ -29,15 +29,19 @@ class AccountManager:
         except Exception as e:
             log.error("reqAccountUpdates failed: %s", e)
 
-        values = self._ib.accountValues()
-        items  = self._ib.portfolio()
-        log.info("AccountManager subscribed: replaying %d account values, %d portfolio items.",
-                 len(values), len(items))
+        values    = self._ib.accountValues()
+        items     = self._ib.portfolio()
+        positions = self._ib.positions()
+        log.info("AccountManager subscribed: replaying %d account values, "
+                 "%d portfolio items, %d positions.",
+                 len(values), len(items), len(positions))
 
         for value in values:
             self._onAccountValue(value)
         for item in items:
-            self._onPortfolio(item)
+            self._feedPosition(item.contract, item.position)
+        for pos in positions:
+            self._feedPosition(pos.contract, pos.position)
 
     def stop(self) -> None:
         if self._account and self._ib.isConnected():
@@ -64,8 +68,8 @@ class AccountManager:
         self.onAccountUpdate(value.tag, value.currency, valFloat)
 
     def _onPortfolio(self, item: PortfolioItem) -> None:
-        contractId = item.contract.conId
-        position   = item.position
+        self._feedPosition(item.contract, item.position)
 
-        if contractId and self.onPositionUpdate:
-            self.onPositionUpdate(contractId, position)
+    def _feedPosition(self, contract, position) -> None:
+        if contract and contract.conId and self.onPositionUpdate:
+            self.onPositionUpdate(contract.conId, position)

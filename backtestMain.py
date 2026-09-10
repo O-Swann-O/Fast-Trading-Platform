@@ -155,7 +155,8 @@ def _fxMappingOk() -> bool:
 
 def _checkVersions():
     required = {
-        "StateManager.unpricedCurrencies": hasattr(state, "unpricedCurrencies"),
+        "StateManager.pendingCurrencies":   hasattr(state, "pendingCurrencies"),
+        "FxRates.canConvert":              hasattr(state.fx, "canConvert"),
         "StateManager.reconcileCash":      hasattr(state, "reconcileCash"),
         "StateManager.applyFill":          hasattr(state, "applyFill"),
         "StateManager.releasePending":     hasattr(state, "releasePending"),
