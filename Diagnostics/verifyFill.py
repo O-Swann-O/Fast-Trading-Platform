@@ -17,9 +17,10 @@ from signalSource import FixedTargetSource
 import barReplay
 
 TARGET_CONID = 14433401
-TARGET_QTY   = 10_000
+TARGET_QTY   = 25_000
 
-m.core._source = FixedTargetSource({TARGET_CONID: TARGET_QTY})
+m.makeSignalSource = lambda: FixedTargetSource({TARGET_CONID: TARGET_QTY})
+m.build("dukascopy")
 
 replay = barReplay.load_duckdb(
     bt.stores["dukascopy"],

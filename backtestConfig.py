@@ -61,7 +61,8 @@ stores = {
 
 profiles = {
     "dukascopy": {"tradingHoursUTC": None,                        "sampleInterval": 5.0},
-    "ibkr":      {"tradingHoursUTC": (time(14, 30), time(21, 0)), "sampleInterval": 300.0},
+    "ibkr":      {"tradingHoursUTC": (time(14, 30), time(21, 0)), "sampleInterval": 300.0,
+                  "staleLimit": 600.0},
 }
 
 

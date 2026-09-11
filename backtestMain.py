@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import inspect
 from datetime import datetime
 import logging
 import argparse
@@ -57,10 +58,11 @@ def build(source: str) -> None:
         notionalUSD   = state.estNotionalUSD,
     )
     core    = TradingCore(sim, clock, makeSignalSource(), session, state,
-                          sampleInterval=profile["sampleInterval"])
+                          sampleInterval=profile["sampleInterval"],
+                          staleLimit=profile.get("staleLimit"))
 
-    log.info("Universe '%s': %d instruments, sampling every %.0fs, hours %s",
-             source, len(universe), profile["sampleInterval"],
+    log.info("Universe '%s': %d instruments, sampling every %.0fs, stale after %.0fs, hours %s",
+             source, len(universe), profile["sampleInterval"], core._staleLimit,
              profile["tradingHoursUTC"] or "FX week")
 
 
@@ -94,6 +96,27 @@ def _report():
     print("=================================================")
 
 
+_SETTLE_SPINS = 5
+
+
+async def _settle(orders) -> None:
+    for _ in range(_SETTLE_SPINS):
+        if not orders.pending:
+            return
+        await asyncio.sleep(0)
+
+
+async def _closeGroup(ts, lastEquityTs, orders):
+    await _settle(orders)
+    if lastEquityTs is None or (ts - lastEquityTs).total_seconds() >= 60:
+        eq = state.equity()
+        _sampleEquity(eq)
+        if _recorder:
+            _recorder.equity(ts, eq)
+        return ts
+    return lastEquityTs
+
+
 async def run(replay, pace):
     if not await core.setup([c for c, _ in universe]):
         return
@@ -103,50 +126,45 @@ async def run(replay, pace):
 
     log.info("Replaying ticks in-process (pace=%.2f, 0 = unthrottled).", pace)
 
-    prev_ts    = None
-    last_eq_ts = None
-    orders = core.orders
+    orders       = core.orders
+    groupTs      = None
+    lastEquityTs = None
     for tick in replay:
-        if pace > 0 and prev_ts is not None:
-            dt = (tick.ts - prev_ts).total_seconds() / pace
-            await asyncio.sleep(dt if dt > 0 else 0)
-        elif orders.pending:
-            await asyncio.sleep(0)
-        prev_ts = tick.ts
+        if tick.ts != groupTs:
+            if groupTs is not None:
+                lastEquityTs = await _closeGroup(groupTs, lastEquityTs, orders)
+                if pace > 0:
+                    dt = (tick.ts - groupTs).total_seconds() / pace
+                    await asyncio.sleep(dt if dt > 0 else 0)
 
-        clock.advance(tick.ts)
-        session.update()
+            day = tick.ts.date()
+            if _progress["day"] is None:
+                _progress["day"] = day
+            elif day != _progress["day"]:
+                log.info("Replayed %s   ticks %s   %s",
+                         _progress["day"], f"{_progress['ticks']:,}", core.summary())
+                _progress["day"], _progress["ticks"] = day, 0
+
+            groupTs = tick.ts
+            clock.advance(groupTs)
+            session.update()
+            core.sampler.poll()
+            await _settle(orders)
+
         sim.feedTick(tick.conId, tick.bid, tick.ask, tick.ts)
-        core.sampler.poll()
-
-        if last_eq_ts is None or (tick.ts - last_eq_ts).total_seconds() >= 60:
-            eq = state.equity()
-            _sampleEquity(eq)
-            if _recorder:
-                _recorder.equity(tick.ts, eq)
-            last_eq_ts = tick.ts
-
-        day = tick.ts.date()
-        if _progress["day"] is None:
-            _progress["day"] = day
-        elif day != _progress["day"]:
-            log.info("Replayed %s   ticks %s   %s",
-                     _progress["day"], f"{_progress['ticks']:,}", core.summary())
-            _progress["day"], _progress["ticks"] = day, 0
         _progress["ticks"] += 1
 
-    if _progress["day"] is not None:
+    if groupTs is not None:
+        await _closeGroup(groupTs, lastEquityTs, orders)
         log.info("Replayed %s   ticks %s   %s",
                  _progress["day"], f"{_progress['ticks']:,}", core.summary())
-    for _ in range(4):
-        await asyncio.sleep(0)
     await core.cancelAll()
     core.stop()
-    if prev_ts is not None:
+    if groupTs is not None:
         eq = state.equity()
         _sampleEquity(eq)
         if _recorder:
-            _recorder.equity(prev_ts, eq)
+            _recorder.equity(groupTs, eq)
 
 
 def _fxMappingOk() -> bool:
@@ -168,6 +186,10 @@ def _checkVersions():
         "OrderManager.pending":            hasattr(type(core.orders), "pending"),
         "FxRates.usdRate":                 hasattr(state.fx, "usdRate"),
         "FxRates cross-pair mapping":      _fxMappingOk(),
+        "FxRates.isRegistered":            hasattr(state.fx, "isRegistered"),
+        "TradingCore staleLimit":          hasattr(core, "_staleLimit"),
+        "TradingCore reject reason":       "reason" in inspect.signature(core._onRejected).parameters,
+        "OrderManager cancel tracking":    hasattr(core.orders, "_cancelRequested"),
     }
     missing = [name for name, ok in required.items() if not ok]
     if missing:
@@ -247,7 +269,7 @@ def main():
                 "positions":    {k: v for k, v in state.inventory.items() if v},
                 "config": {
                     "sampleInterval":      core._interval,
-                    "staleLimit":          config.staleLimit,
+                    "staleLimit":          core._staleLimit,
                     "signalLookback":      config.signalLookback,
                     "marginRate":          config.marginRate,
                     "maxOrderNotional":    config.maxOrderNotional,

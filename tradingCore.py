@@ -14,7 +14,8 @@ log = logging.getLogger(__name__)
 
 class TradingCore:
 
-    def __init__(self, ib, clock, source, session, state, sampleInterval=None) -> None:
+    def __init__(self, ib, clock, source, session, state, sampleInterval=None,
+                 staleLimit=None) -> None:
         self.clock    = clock
         self.state    = state
         self.session  = session
@@ -38,6 +39,7 @@ class TradingCore:
         self._blocked = {}
         self._atCap   = set()
         self._interval = config.sampleInterval if sampleInterval is None else sampleInterval
+        self._staleLimit = config.staleLimit if staleLimit is None else staleLimit
         self._priced  = False
 
         self.feeder.onTick      = self._onTick
@@ -67,12 +69,12 @@ class TradingCore:
             clock          = self.clock,
             conIds         = conIds,
             sampleInterval = self._interval,
-            staleLimit     = config.staleLimit,
+            staleLimit     = self._staleLimit,
         )
         self.sampler.onTargetPosition = self._onTargetPosition
         log.info("Core ready: %d instruments, sampling every %.1fs, stale after %.1fs, "
                  "order cap %s, position cap %s, margin floor %s",
-                 len(conIds), self._interval, config.staleLimit,
+                 len(conIds), self._interval, self._staleLimit,
                  f"{config.maxOrderNotional:,.0f}", f"{config.maxPositionNotional:,.0f}",
                  f"{config.minFreeMargin:,.0f}")
         return True
@@ -129,7 +131,7 @@ class TradingCore:
             return
 
         action = "BUY" if delta > 0 else "SELL"
-        qty    = abs(delta)
+        sign   = 1 if delta > 0 else -1
         ticker = self.ticks.get(conId)
         estPrice = 0.0
         if ticker is not None:
@@ -137,27 +139,25 @@ class TradingCore:
             if not math.isnan(px):
                 estPrice = px
 
-        reducing = abs(assumed + (qty if action == "BUY" else -qty)) < abs(assumed)
-        room = self.gate.maxQtyToPositionCap(conId, assumed, action, estPrice)
-        if qty > room:
-            qty = room
+        room   = self.gate.maxQtyToPositionCap(conId, assumed, action, estPrice)
+        qty    = min(abs(delta), room)
+        cap    = self.gate.maxQtyFor(conId, estPrice)
+        sliced = bool(cap) and qty > cap
+        if sliced:
+            qty = cap
 
+        newPos   = assumed + sign * qty
+        reducing = abs(newPos) < abs(assumed) and newPos * assumed >= 0
         if qty > 0 and not reducing and not self.gate.meetsMinimum(qty):
-            qty = 0
+            if newPos * assumed < 0:
+                qty, sliced = abs(assumed), False
+            else:
+                qty = 0
 
         if qty <= 0:
-            if conId not in self._atCap:
-                self._atCap.add(conId)
-                log.warning("%s cannot advance toward target %d: holding %d "
-                            "(position cap or minimum order size)",
-                            logSetup.name(conId), targetPos, assumed)
+            self._cannotAdvance(conId, targetPos, assumed, room, cap, estPrice)
             return
         self._atCap.discard(conId)
-
-        sliced = False
-        maxQty = self.gate.maxQtyFor(conId, estPrice)
-        if maxQty and qty > maxQty:
-            qty, sliced = maxQty, True
 
         if sliced:
             log.info("Signal %s: target %d -> %s %d of %d (order cap, alpha %.2f)",
@@ -167,13 +167,34 @@ class TradingCore:
                      logSetup.name(conId), targetPos, action, qty, confidence)
         self.orders.submitMarket(conId, contract, action, qty, estPrice)
 
+    def _cannotAdvance(self, conId, targetPos, assumed, room, cap, estPrice) -> None:
+        if conId in self._atCap:
+            return
+        self._atCap.add(conId)
+        name    = logSetup.name(conId)
+        minimum = self.gate.minOrderQty
+        if self.state.estNotionalUSD(conId, 1, estPrice) <= 0:
+            log.warning("%s cannot advance toward target %d: no USD price yet", name, targetPos)
+        elif room <= 0:
+            log.warning("%s cannot advance toward target %d: holding %d at the position cap",
+                        name, targetPos, assumed)
+        elif cap and cap < minimum:
+            need = self.state.estNotionalUSD(conId, minimum, estPrice)
+            log.error("%s cannot trade: order cap %s USD buys %d units, below the %d-unit "
+                      "minimum. Raise maxOrderNotional to at least %s.", name,
+                      f"{self.gate.maxOrderNotional:,.0f}", cap, minimum, f"{need:,.0f}")
+        else:
+            log.warning("%s cannot advance toward target %d: holding %d, remaining step is "
+                        "below the %d-unit minimum", name, targetPos, assumed, minimum)
+
     def _onCancelled(self, contractId, orderId, action, qty, estPrice) -> None:
         log.warning("Cancelled %s order %s (%s %d)", logSetup.name(contractId), orderId, action, qty)
 
-    def _onRejected(self, contractId, orderId, action, qty, estPrice) -> None:
+    def _onRejected(self, contractId, orderId, action, qty, estPrice, reason="") -> None:
         self._blocked[contractId] = self.clock.timestamp() + config.rejectCooldown
-        log.error("Rejected %s order %s (%s %d) — suppressing new orders for %ds",
-                  logSetup.name(contractId), orderId, action, qty, config.rejectCooldown)
+        log.error("Rejected %s order %s (%s %d): %s — suppressing new orders for %ds",
+                  logSetup.name(contractId), orderId, action, qty, reason or "no reason given",
+                  config.rejectCooldown)
 
     def _onCommission(self, conId, amount, currency) -> None:
         self.state.applyCommission(amount, currency)

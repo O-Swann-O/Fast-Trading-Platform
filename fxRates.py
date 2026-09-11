@@ -20,6 +20,9 @@ class FxRates:
     def onPrice(self, conId: int, price: float) -> None:
         self._prices[conId] = price
 
+    def isRegistered(self, conId: int) -> bool:
+        return conId in self._meta
+
     def baseOf(self, conId: int) -> str:
         return self._meta[conId][0]
 

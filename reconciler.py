@@ -14,6 +14,7 @@ class Reconciler:
         self._interval        = intervalSeconds
         self._running         = False
         self._task            = None
+        self._ignored         = set()
         self.onDriftCorrected = None
 
     def start(self) -> None:
@@ -64,14 +65,53 @@ class Reconciler:
                 continue
         return cash
 
+    def _brokerTruth(self):
+        reported  = [p for p in self._ib.positions() if p.contract and p.contract.conId]
+        positions = {}
+        baseLegs  = {}
+        for p in reported:
+            conId = p.contract.conId
+            if not self._state.fx.isRegistered(conId):
+                if conId not in self._ignored:
+                    self._ignored.add(conId)
+                    log.warning("Ignoring broker position %s %s (conId %s): not in the traded "
+                                "universe, so it is left out of the book.",
+                                p.contract.localSymbol or p.contract.symbol, p.position, conId)
+                continue
+            qty = int(p.position)
+            positions[conId] = qty
+            if p.contract.secType == "CASH":
+                base = self._state.fx.baseOf(conId)
+                baseLegs[base] = baseLegs.get(base, 0) + qty
+
+        cash = self._brokerCash()
+        for ccy, held in baseLegs.items():
+            if ccy in cash:
+                cash[ccy] -= held
+        return reported, positions, cash
+
+    def seed(self) -> None:
+        _, positions, cash = self._brokerTruth()
+        for conId, qty in positions.items():
+            if qty:
+                self._state.reconcilePosition(conId, qty)
+                log.info("Position seeded: %s %d", logSetup.name(conId), qty)
+        for ccy, amount in cash.items():
+            if amount:
+                self._state.reconcileCash(ccy, amount)
+                log.info("Book seeded: %s %.2f", ccy, amount)
+        excluded = self._state.unconvertibleCurrencies()
+        if excluded:
+            log.warning("No traded pair converts %s to USD; excluded from equity.",
+                        ", ".join(excluded))
+
     def _reconcile(self) -> None:
         driftFound = False
 
-        brokerPositions = {p.contract.conId: int(p.position)
-                           for p in self._ib.positions() if p.contract}
+        reported, brokerPositions, brokerCash = self._brokerTruth()
 
         held = [c for c, q in self._state.inventory.items() if q]
-        if held and not brokerPositions:
+        if held and not reported:
             log.error("Broker reports no positions while the book holds %d instrument(s). "
                       "Treating this as a position-feed failure, not as truth; "
                       "positions left untouched. Check Virtual FX Tracking in account settings.",
@@ -104,7 +144,7 @@ class Reconciler:
         if anyInFlight:
             log.debug("Cash audit skipped: orders in flight.")
         else:
-            for ccy, trueCash in self._brokerCash().items():
+            for ccy, trueCash in brokerCash.items():
                 internalCash = self._state.cashBy.get(ccy, 0.0)
                 if abs(internalCash - trueCash) > 0.05:
                     log.warning("Cash drift in %s: Internal=%.2f, Broker=%.2f. Overwriting.",

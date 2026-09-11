@@ -47,7 +47,8 @@ unbreakable risk and execution firewall for any future mathematical signal gener
 * **`RiskGate`:** The ultimate fail-safe. Blocks trades when the market is closed, the kill switch
   is present, notional limits are breached, or free margin is insufficient.
 * **`OrderManager`:** Places and tracks orders through to a terminal state. *Coupled directly to the
-  Risk Gate so it is physically impossible to place an unchecked order.*
+  Risk Gate so it is physically impossible to place an unchecked order.* A cancellation the system
+  did not request is a broker rejection, and suppresses the instrument for `rejectCooldown`.
 * **`ContractRegistry`:** The single source of truth for tradable instruments. Qualifies every asset
   with the exchange at startup to prevent downstream routing rejections.
 * **`SessionManager`:** One implementation, both paths, all UTC. Encodes the FX week as a market
@@ -60,9 +61,11 @@ unbreakable risk and execution firewall for any future mathematical signal gener
 ### Live Only
 
 * **`BrokerBoundary`:** Manages the heartbeat, connection lifecycle, and auto-reconnection.
-* **`AccountManager`:** Subscribes to account values and positions; seeds the book at startup.
-* **`Reconciler`:** The reality check. Audits internal state against broker truth every 5 minutes,
-  skipping any instrument with an order in flight.
+* **`AccountManager`:** Subscribes to account values and positions.
+* **`Reconciler`:** The reality check. Seeds the book at startup and audits it against broker truth
+  every 5 minutes, skipping any instrument with an order in flight. IB reports the base leg of an
+  FX position as currency cash, which the book holds as inventory; the Reconciler removes it before
+  seeding or comparing, and leaves positions outside the traded universe out of the book.
 
 ### Backtest Only
 
@@ -137,6 +140,10 @@ Live and backtest differ in exactly three injections. Everything downstream is s
 Because the clock is injected, replay speed has no effect on results: the sampler fires on data
 time, not wall time. The same range replayed at any speed produces identical output.
 
+Ticks are applied in timestamp groups. A sample due at T fires before any tick stamped T is applied,
+so it sees a synchronous snapshot of everything stamped before T, and the result does not depend on
+the order in which the store returns ties.
+
 ---
 
 ## 7. SETUP & CONFIGURATION
@@ -169,7 +176,8 @@ immediately. Deleting it resumes. No restart required.
 ```
 pip install -r requirements.txt
 
-python main.py                                            # live / paper
+python main.py                                            # live / paper, observe-only: no orders
+python main.py --trade                                    # live / paper, armed
 python backtestMain.py --from DATE --to DATE --name RUN   # backtest, recorded to results/RUN
 python analyze.py                                         # statistics for the newest run
 python analyze.py --index --sort sharpe                   # browsable index of every run
@@ -177,7 +185,8 @@ python analyze.py --index --sort sharpe                   # browsable index of e
 
 `--source` selects the tick store *and* the instrument universe together, so the two can never
 disagree. It accepts any key in `backtestConfig.stores` or a path to a tick CSV. Each source also
-carries a profile — trading hours and sampling interval — because those differ by asset class.
+carries a profile — trading hours, sampling interval and, where it must differ from live, a
+staleness limit — because those differ by asset class.
 A range with no data fails immediately rather than replaying to an empty result.
 
 Every backtest is recorded to `results/<name>/`: `fills.csv` written as trades happen,

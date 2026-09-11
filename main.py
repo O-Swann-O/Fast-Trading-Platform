@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import argparse
 
 import os
 from datetime import datetime
@@ -28,14 +29,8 @@ core       = TradingCore(broker.ib, clock, RingBufferSource(config.signalLookbac
 account    = AccountManager(broker.ib)
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
-CASH_TAG = "CashBalance"
-_seededCurrencies = set()
-_seedingDone      = False
-
-
-def _tagName(tag: str) -> str:
-    return tag[len("$LEDGER-"):] if tag.startswith("$LEDGER-") else tag
-
+_seedingDone = False
+_armed       = False
 
 _heartbeat = None
 recorder   = Recorder(
@@ -62,16 +57,23 @@ async def onConnected():
     log.info("Contracts qualified. Starting account subscriptions...")
     global _seedingDone
     account.start()
-    _seedingDone = True
+    if not _seedingDone:
+        reconciler.seed()
+        _seedingDone = True
     log.info("Account subscriptions done. Subscribing market data...")
     core.recorder = recorder
     core.orders.onUnresolved = reconciler.auditNow
     core.start()
     reconciler.auditNow()
-    core.sampler.start()
+    if _armed:
+        core.sampler.start()
+    else:
+        log.warning("Observe-only: the sampler is not running and no orders will be placed. "
+                    "Start with --trade to arm it.")
     reconciler.start()
     _heartbeat = asyncio.create_task(_heartbeatLoop())
-    log.info("System live: %d instruments. %s", len(core.registry.getAll()), core.summary())
+    log.info("System live (%s): %d instruments. %s", "ARMED" if _armed else "observe-only",
+             len(core.registry.getAll()), core.summary())
 
 def _safe(step, label):
     try:
@@ -103,28 +105,6 @@ async def onSessionEnd():
     log.info("Market session ended. Halting system.")
     await core.cancelAll()
 
-def onAccountUpdate(tag, currency, value):
-    if _seedingDone:
-        return
-    if _tagName(tag) != CASH_TAG:
-        return
-    if currency in ("", "BASE") or currency in _seededCurrencies:
-        return
-    if value == 0.0:
-        return
-    state.seed(currency, value)
-    _seededCurrencies.add(currency)
-    if state.fx.canConvert(currency):
-        log.info("Book seeded: %s %.2f", currency, value)
-    else:
-        log.warning("Seeded %s %.2f but no traded pair can convert it to USD; "
-                    "it is excluded from equity.", currency, value)
-
-def onPositionUpdate(contractId, position):
-    if contractId not in state.inventory and position != 0:
-        state.reconcilePosition(contractId, int(position))
-        log.info("Position seeded: %s %d", logSetup.name(contractId), int(position))
-
 def onDriftCorrected(driftType, asset, oldVal, newVal):
     if driftType == "INVENTORY":
         log.warning("Drift corrected [INVENTORY] contract %s: %d -> %d", asset, oldVal, newVal)
@@ -136,8 +116,6 @@ broker.onConnected          = onConnected
 broker.onDisconnected       = onDisconnected
 session.onSessionStart      = onSessionStart
 session.onSessionEnd        = onSessionEnd
-account.onAccountUpdate     = onAccountUpdate
-account.onPositionUpdate    = onPositionUpdate
 reconciler.onDriftCorrected = onDriftCorrected
 
 _shuttingDown = False
@@ -164,6 +142,7 @@ async def shutdown():
         recorder.finish({
             "name":         os.path.basename(recorder.outDir),
             "mode":         "live",
+            "armed":        _armed,
             "account":      getattr(account, "_account", ""),
             "signalSource": type(core._source).__name__,
             "instruments":  len(core.registry.getAll()),
@@ -211,6 +190,10 @@ def _checkVersions():
         "FxRates cross-pair mapping":      _fxMappingOk(),
         "AccountManager (sync start)":     not __import__("inspect").iscoroutinefunction(account.start),
         "BrokerBoundary.attempt counter":  hasattr(broker, "_attempt"),
+        "Reconciler.seed":                 hasattr(reconciler, "seed"),
+        "FxRates.isRegistered":            hasattr(state.fx, "isRegistered"),
+        "TradingCore reject reason":       "reason" in __import__("inspect").signature(core._onRejected).parameters,
+        "OrderManager cancel tracking":    hasattr(core.orders, "_cancelRequested"),
     }
     missing = [name for name, ok in required.items() if not ok]
     if missing:
@@ -221,6 +204,11 @@ def _checkVersions():
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--trade", action="store_true",
+                    help="arm the sampler; without it the system observes and places no orders")
+    _armed = ap.parse_args().trade
+
     logSetup.setup()
     _checkVersions()
 

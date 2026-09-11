@@ -7,6 +7,14 @@ log = logging.getLogger(__name__)
 
 fillTimeout = 30
 cancelWait  = 2
+TERMINAL    = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
+
+
+def _brokerReason(trade) -> str:
+    for entry in reversed(getattr(trade, "log", None) or []):
+        if getattr(entry, "errorCode", 0):
+            return getattr(entry, "message", "") or f"error {entry.errorCode}"
+    return f"status {trade.orderStatus.status}"
 
 
 class OrderManager:
@@ -17,6 +25,7 @@ class OrderManager:
         self._active      = {}
         self._events      = {}
         self._tasks       = set()
+        self._cancelRequested = set()
         self.onAccepted   = None
         self.onFill       = None
         self.onPartial    = None
@@ -104,6 +113,7 @@ class OrderManager:
     async def cancel(self, orderId):
         trade = self._active.get(orderId)
         if trade:
+            self._cancelRequested.add(orderId)
             try:
                 self._ib.cancelOrder(trade.order)
             except Exception as e:
@@ -134,7 +144,7 @@ class OrderManager:
         except Exception as e:
             log.error("Order placement failed for contract %s: %s", contractId, e)
             if self.onRejected:
-                self.onRejected(contractId, None, order.action, requestedQty, estPrice)
+                self.onRejected(contractId, None, order.action, requestedQty, estPrice, str(e))
             self._release(contractId, order.action, requestedQty, estPrice)
             return
 
@@ -148,6 +158,7 @@ class OrderManager:
         finally:
             self._active.pop(orderId, None)
             self._events.pop(orderId, None)
+            self._cancelRequested.discard(orderId)
             self._release(contractId, order.action, requestedQty, estPrice)
 
         if unresolved and self.onUnresolved:
@@ -167,6 +178,7 @@ class OrderManager:
 
         except asyncio.TimeoutError:
             log.warning("Order %s not terminal after %ds — cancelling.", orderId, fillTimeout)
+            self._cancelRequested.add(orderId)
             try:
                 self._ib.cancelOrder(trade.order)
             except Exception as e:
@@ -199,8 +211,10 @@ class OrderManager:
                            int(requestedQty) - filled)
             return
 
-        if status == "Rejected" and self.onRejected:
-            self.onRejected(contractId, orderId, trade.order.action, requestedQty, estPrice)
+        unrequested = orderId not in self._cancelRequested
+        if (status == "Rejected" or unrequested) and self.onRejected:
+            self.onRejected(contractId, orderId, trade.order.action, requestedQty, estPrice,
+                            _brokerReason(trade))
             return
 
         if self.onCancelled:
@@ -224,7 +238,7 @@ class OrderManager:
 
     def _onOrderStatus(self, trade):
         status = trade.orderStatus.status
-        if status in ("Filled", "Cancelled", "Inactive", "Rejected"):
+        if status in TERMINAL:
             orderId = trade.order.orderId
             event   = self._events.get(orderId)
             if event and not event.is_set():
