@@ -36,7 +36,7 @@ def loadRun(runDir: str):
                     "action":   row["action"],
                     "qty":      int(row["qty"]),
                     "price":    float(row["price"]),
-                    "commission": float(row.get("commission") or 0.0),
+                    "quoteRate": float(row.get("quoteRate") or 0.0),
                     "position": int(row["position"]),
                     "equity":   float(row["equity"]),
                 })
@@ -52,12 +52,10 @@ def equityStats(times, values) -> dict:
     spacings = [times[i] - times[i - 1] for i in range(1, n)]
     nominal  = sorted(spacings)[len(spacings) // 2] or 1
 
-    rets, kept, skipped = [], 0, 0
+    rets, kept, gaps = [], 0, 0
     for i in range(1, n):
-        dt = times[i] - times[i - 1]
-        if dt > nominal * GAP_TOLERANCE:
-            skipped += 1
-            continue
+        if times[i] - times[i - 1] > nominal * GAP_TOLERANCE:
+            gaps += 1
         prev = values[i - 1]
         if prev:
             rets.append((values[i] - prev) / prev)
@@ -71,7 +69,7 @@ def equityStats(times, values) -> dict:
     var  = sum((r - mean) ** 2 for r in rets) / len(rets) if rets else 0.0
     std  = math.sqrt(var)
     down = [r for r in rets if r < 0]
-    dvar = sum(r * r for r in down) / len(down) if down else 0.0
+    dvar = sum(r * r for r in down) / len(rets) if rets else 0.0
     dstd = math.sqrt(dvar)
 
     scale   = math.sqrt(perYear) if perYear > 0 else 0.0
@@ -107,15 +105,17 @@ def equityStats(times, values) -> dict:
         "maxDrawdown": maxdd,
         "ddDays":      ddLongest / 86400,
         "perYear":     perYear,
-        "gapsSkipped": skipped,
+        "gapIntervals": gaps,
         "bestReturn":  max(rets) if rets else 0.0,
         "worstReturn": min(rets) if rets else 0.0,
     }
 
 
-def tradeStats(fills, marks) -> dict:
+def tradeStats(fills, marks, quoteCcy=None, quoteRates=None, commission=0.0) -> dict:
+    quoteCcy   = quoteCcy or {}
+    quoteRates = quoteRates or {}
     positions, avgCost, realised = {}, {}, {}
-    volume, roundTrips, commission = 0.0, [], 0.0
+    volume, roundTrips, unknownRate = 0.0, [], 0
     symbols = {}
 
     for f in fills:
@@ -123,8 +123,11 @@ def tradeStats(fills, marks) -> dict:
         symbols[cid] = f["symbol"]
         q = f["qty"] if f["action"] == "BUY" else -f["qty"]
         x = f["price"]
-        volume += abs(q) * x
-        commission += f.get("commission", 0.0)
+        rate = f.get("quoteRate", 0.0)
+        if rate <= 0:
+            unknownRate += 1
+            rate = 0.0
+        volume += abs(q) * x * rate
 
         p = positions.get(cid, 0)
         c = avgCost.get(cid, 0.0)
@@ -135,7 +138,7 @@ def tradeStats(fills, marks) -> dict:
             positions[cid] = total
         else:
             closed = min(abs(p), abs(q))
-            pnl    = closed * (x - c) * (1 if p > 0 else -1)
+            pnl    = closed * (x - c) * (1 if p > 0 else -1) * rate
             realised[cid] = realised.get(cid, 0.0) + pnl
             roundTrips.append(pnl)
             remaining = p + q
@@ -147,9 +150,12 @@ def tradeStats(fills, marks) -> dict:
 
     unrealised = {}
     for cid, p in positions.items():
-        if p and marks.get(str(cid), marks.get(cid)) is not None:
-            mark = float(marks.get(str(cid), marks.get(cid)))
-            unrealised[cid] = p * (mark - avgCost.get(cid, 0.0))
+        mark = marks.get(str(cid), marks.get(cid))
+        if not p or mark is None:
+            continue
+        ccy  = quoteCcy.get(str(cid), quoteCcy.get(cid))
+        rate = quoteRates.get(ccy, 0.0) if ccy else 0.0
+        unrealised[cid] = p * (float(mark) - avgCost.get(cid, 0.0)) * rate
 
     wins   = [p for p in roundTrips if p > 0]
     losses = [p for p in roundTrips if p < 0]
@@ -173,6 +179,7 @@ def tradeStats(fills, marks) -> dict:
         "avgLoss":       (sum(losses) / len(losses)) if losses else 0.0,
         "realisedTotal": sum(realised.values()),
         "commission":    commission,
+        "unknownRate":   unknownRate,
         "openPositions": {c: p for c, p in positions.items() if p},
         "perInstrument": perInstrument,
     }
@@ -198,8 +205,8 @@ def printReport(meta, eq, tr) -> None:
         print(f"  period            {_fmtTime(eq['startTime'])} .. {_fmtTime(eq['endTime'])}"
               f"  ({eq['days']:.1f} days)")
         print(f"  samples           {eq['samples']:,}  ({eq['perYear']:,.0f}/yr effective)")
-        if eq["gapsSkipped"]:
-            print(f"  gaps excluded     {eq['gapsSkipped']:,} sample intervals")
+        if eq["gapIntervals"]:
+            print(f"  gap intervals     {eq['gapIntervals']:,} (weekend/session breaks, included)")
         print()
         print(f"  start equity      {eq['start']:>16,.2f}")
         print(f"  end equity        {eq['end']:>16,.2f}")
@@ -214,8 +221,10 @@ def printReport(meta, eq, tr) -> None:
     print()
     print(f"  fills             {tr['fills']:>16,}")
     print(f"  round trips       {tr['roundTrips']:>16,}")
-    print(f"  traded volume     {tr['volume']:>16,.0f}")
-    print(f"  commission        {tr['commission']:>16,.2f}")
+    print(f"  traded volume USD {tr['volume']:>16,.0f}")
+    print(f"  commission USD    {tr['commission']:>16,.2f}")
+    if tr["unknownRate"]:
+        print(f"  fills w/o FX rate {tr['unknownRate']:>16,}  (excluded from USD totals)")
     net = tr['realisedTotal'] - tr['commission']
     print(f"  realised net      {net:>16,.2f}  (gross {tr['realisedTotal']:,.2f})")
     if tr["roundTrips"]:
@@ -224,7 +233,7 @@ def printReport(meta, eq, tr) -> None:
 
     if tr["perInstrument"]:
         print()
-        print("  PER INSTRUMENT")
+        print("  PER INSTRUMENT (USD)")
         rows = sorted(tr["perInstrument"].values(), key=lambda r: -r["total"])
         print(f"    {'symbol':<10}{'realised':>14}{'unrealised':>14}{'total':>14}{'position':>12}")
         for r in rows:
@@ -371,7 +380,8 @@ def collectRuns(resultsDir: str):
             continue
         meta.setdefault("name", name)
         eq = equityStats(times, values)
-        tr = tradeStats(fills, meta.get("marks", {}))
+        tr = tradeStats(fills, meta.get("marks", {}), meta.get("quoteCcy", {}),
+                        meta.get("quoteRates", {}), float(meta.get("commission", 0.0)))
         curve = _downsample(times, values, 900) if values else []
         dd = []
         if values:
@@ -562,7 +572,8 @@ def main():
     meta.setdefault("name", os.path.basename(os.path.normpath(runDir)))
 
     eq = equityStats(times, values)
-    tr = tradeStats(fills, meta.get("marks", {}))
+    tr = tradeStats(fills, meta.get("marks", {}), meta.get("quoteCcy", {}),
+                    meta.get("quoteRates", {}), float(meta.get("commission", 0.0)))
     printReport(meta, eq, tr)
 
     if args.html:

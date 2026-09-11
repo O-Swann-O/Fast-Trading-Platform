@@ -92,6 +92,9 @@ unbreakable risk and execution firewall for any future mathematical signal gener
    corrupt the book.
 8. **Absence Is Not Truth:** A broker feed returning nothing is a failure, not a flat account. The
    Reconciler refuses to overwrite positions when the position feed is empty but the book is not.
+9. **Convert Before Summing:** Prices and P&L live in an instrument's quote currency. Anything that
+   aggregates across instruments must convert to USD first, or a JPY pair will outweigh a USD pair
+   by two orders of magnitude.
 
 ---
 
@@ -108,6 +111,10 @@ compute(conIds, prices) -> (targets, confidences)
 * **`targets`** — the *absolute desired position* per instrument, in base-currency units.
   Negative is short, zero is flat.
 * **`confidences`** — alpha score per instrument, currently informational.
+
+An in-process signal source is called synchronously with fresh prices, so there is no transport
+delay to guard against. A source that arrives over a network boundary must validate its own
+message age before the framework acts on it.
 
 The framework computes the delta against current inventory plus in-flight orders and acts only on
 the difference. Restating the same target repeatedly is therefore free and safe.
@@ -199,10 +206,12 @@ coverage, gap detection, forced-fill audit, IB account probe.
    internally.
 3. **Sampling Floor:** The tick store is resampled to one second, so sub-second signal is not
    testable against it.
-4. **Optimistic Fills:** `SimBroker` crosses the real historical spread but does not model partial
-   fills, rejections, or variable latency. Adequate for retail FX size; revisit if strategy
-   behaviour becomes fill-sensitive.
+4. **Optimistic Fills:** `SimBroker` crosses the real historical spread and charges commission on
+   IBKR's schedule, but does not model partial fills, rejections, or variable latency. Note that
+   below roughly 100,000 USD notional the per-order minimum dominates, so `maxOrderNotional`
+   directly determines the effective commission rate.
 5. **Minimum Order Size:** IDEALPRO routes orders under roughly 20,000 base-currency units as odd
-   lots at worse prices. The framework does not enforce a floor; strategies must size above it.
+   lots at worse prices. `config.minOrderQty` enforces this floor on trades that increase a
+   position; reductions are always allowed so a small position can still be closed.
 6. **Margin Assumption:** Position sizing assumes the account carries the margin permissions implied
    by `config.marginRate`, which is a configured estimate rather than a broker-reported figure.

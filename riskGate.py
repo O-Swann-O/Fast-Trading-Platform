@@ -10,13 +10,15 @@ class RiskGate:
 
     def __init__(self, state, session, killSwitchFile: str,
                  maxOrderNotional: float, maxPositionNotional: float,
-                 minFreeMargin: float, maxTickJump: float = 0.05) -> None:
+                 minFreeMargin: float, maxTickJump: float = 0.05,
+                 minOrderQty: int = 0) -> None:
         self._state              = state
         self._session            = session
         self.killSwitchFile      = killSwitchFile
         self.maxOrderNotional    = maxOrderNotional
         self.maxPositionNotional = maxPositionNotional
         self.minFreeMargin       = minFreeMargin
+        self.minOrderQty         = minOrderQty
         self.maxTickJump         = maxTickJump
         self._lastPrices         = {}
         self._pendingJump        = {}
@@ -52,6 +54,20 @@ class RiskGate:
         if unit <= 0:
             return 0
         return int(self.maxOrderNotional / unit)
+
+    def meetsMinimum(self, qty: int) -> bool:
+        return qty >= self.minOrderQty
+
+    def maxQtyToPositionCap(self, contractId: int, currentPos: int,
+                            action: str, estimatedPrice: float) -> int:
+        unit = self._state.estNotionalUSD(contractId, 1, estimatedPrice)
+        if unit <= 0:
+            return 0
+        maxUnits = int(self.maxPositionNotional / unit)
+        signed   = 1 if action == "BUY" else -1
+        if currentPos == 0 or (signed > 0) == (currentPos > 0):
+            return max(0, maxUnits - abs(currentPos))
+        return abs(currentPos) + maxUnits
 
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:
         if self.killSwitchFile and os.path.exists(self.killSwitchFile):

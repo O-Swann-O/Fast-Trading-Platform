@@ -20,6 +20,23 @@ class _Trade:
         self.commission  = 0.0
 
 
+class _CommissionReport:
+    __slots__ = ["commission", "currency", "execId"]
+    def __init__(self, commission, currency):
+        self.commission = commission
+        self.currency   = currency
+        self.execId     = ""
+
+
+class _Fill:
+    __slots__ = ["contract", "execution", "commissionReport", "time"]
+    def __init__(self, contract, report, time):
+        self.contract         = contract
+        self.execution        = None
+        self.commissionReport = report
+        self.time             = time
+
+
 class _Ticker:
     __slots__ = ["contract", "time", "_price"]
     def __init__(self, contract, price, time):
@@ -33,14 +50,16 @@ class _Ticker:
 class SimBroker:
 
     def __init__(self, conIdMap, halfSpread, commissionBps=0.0,
-                 commissionMin=0.0, notionalUSD=None):
+                 commissionMin=0.0, commissionCcy="USD", notionalUSD=None):
         self._conIdMap      = conIdMap
         self._halfSpread    = halfSpread
         self._commissionBps = commissionBps
         self._commissionMin = commissionMin
+        self._commissionCcy = commissionCcy
         self._notionalUSD   = notionalUSD
-        self.orderStatusEvent    = Event("orderStatusEvent")
-        self.pendingTickersEvent = Event("pendingTickersEvent")
+        self.orderStatusEvent     = Event("orderStatusEvent")
+        self.pendingTickersEvent  = Event("pendingTickersEvent")
+        self.commissionReportEvent = Event("commissionReportEvent")
         self._contracts = {}
         self._open      = {}
         self._nextId    = 1
@@ -82,7 +101,7 @@ class SimBroker:
         self.orderStatusEvent.emit(trade)
 
     def feedTick(self, conId, bid, ask, ts):
-        self._match(conId, bid, ask)
+        self._match(conId, bid, ask, ts)
         contract = self._contracts.get(conId)
         if contract is not None:
             mid = (bid + ask) * 0.5
@@ -97,7 +116,7 @@ class SimBroker:
             notional = abs(qty) * price
         return max(self._commissionMin, notional * self._commissionBps / 10_000.0)
 
-    def _match(self, conId, bid, ask):
+    def _match(self, conId, bid, ask, ts=None):
         if not self._open:
             return
         hs = self._halfSpread.get(conId, 0.0)
@@ -110,6 +129,11 @@ class SimBroker:
             trade.orderStatus.status       = "Filled"
             trade.orderStatus.filled       = qty
             trade.orderStatus.avgFillPrice = fill
-            trade.commission               = self._commission(conId, qty, fill)
+            commission                     = self._commission(conId, qty, fill)
+            trade.commission               = commission
             self._open.pop(orderId, None)
             self.orderStatusEvent.emit(trade)
+            if commission:
+                report = _CommissionReport(commission, self._commissionCcy)
+                contract = self._contracts.get(conId)
+                self.commissionReportEvent.emit(trade, _Fill(contract, report, ts), report)

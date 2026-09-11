@@ -81,15 +81,19 @@ class StateManager:
         if not any(self._reserved.values()):
             self.reservedMargin = 0.0
 
-    def applyFill(self, conId, action, qty, price, commission=0.0, commissionCcy="USD") -> None:
+    def applyFill(self, conId, action, qty, price) -> None:
         quote  = self.fx.quoteOf(conId)
         signed = qty if action == "BUY" else -qty
         self.inventory[conId] = self.inventory.get(conId, 0) + signed
         self.cashBy[quote]    = self.cashBy.get(quote, 0.0) - signed * price
-        if commission:
-            self.cashBy[commissionCcy] = self.cashBy.get(commissionCcy, 0.0) - commission
-            self.commission += commission
         self.fills += 1
+
+    def applyCommission(self, amount: float, currency: str = "USD") -> None:
+        if not amount:
+            return
+        self.cashBy[currency] = self.cashBy.get(currency, 0.0) - amount
+        rate = self.fx.usdRate(currency)
+        self.commission += amount * rate if rate is not None else amount
 
     def reconcilePosition(self, conId: int, qty: int) -> None:
         self.inventory[conId] = qty

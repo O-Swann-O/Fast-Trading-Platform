@@ -49,6 +49,8 @@ async def _heartbeatLoop():
     while True:
         await asyncio.sleep(60)
         log.info("Status: %s", core.summary())
+        if not state.pendingCurrencies():
+            recorder.equity(clock.now(), state.equity())
 
 
 async def onConnected():
@@ -167,6 +169,9 @@ async def shutdown():
             "instruments":  len(core.registry.getAll()),
             "marks":        core.marks(),
             "symbols":      core.symbols(),
+            "quoteCcy":     core.quoteCurrencies(),
+            "quoteRates":   core.quoteRates(),
+            "commission":   state.commission,
             "endEquity":    state.equity(),
             "cashBy":       state.cashBy,
             "positions":    {k: v for k, v in state.inventory.items() if v},

@@ -20,7 +20,6 @@ dspSignalPort  = 5001
 sampleInterval = 1.0
 staleLimit     = 5.0
 signalLookback = 600
-maxSignalAge   = 5
 
 # --- Session ---
 tradingHoursUTC = None
@@ -28,6 +27,7 @@ tradingHoursUTC = None
 # --- Risk Gate ---
 killSwitchFile      = os.path.join(_HERE, "KILLSWITCH")
 marginRate          = 0.05
+minOrderQty         = 20_000
 maxOrderNotional    = 25_000.0
 maxPositionNotional = 100_000.0
 minFreeMargin       = 10_000.0

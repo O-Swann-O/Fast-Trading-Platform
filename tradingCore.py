@@ -27,6 +27,7 @@ class TradingCore:
             maxOrderNotional    = config.maxOrderNotional,
             maxPositionNotional = config.maxPositionNotional,
             minFreeMargin       = config.minFreeMargin,
+            minOrderQty         = config.minOrderQty,
             maxTickJump         = config.maxTickJump,
         )
         self.orders   = OrderManager(ib, self.gate)
@@ -35,6 +36,7 @@ class TradingCore:
         self.recorder = None
         self._source  = source
         self._blocked = {}
+        self._atCap   = set()
         self._interval = config.sampleInterval if sampleInterval is None else sampleInterval
         self._priced  = False
 
@@ -43,8 +45,9 @@ class TradingCore:
         self.orders.onReleased  = state.releasePending
         self.orders.onFill      = self._onFill
         self.orders.onPartial   = self._onPartial
-        self.orders.onCancelled = self._onCancelled
-        self.orders.onRejected  = self._onRejected
+        self.orders.onCancelled  = self._onCancelled
+        self.orders.onRejected   = self._onRejected
+        self.orders.onCommission = self._onCommission
 
     async def setup(self, universe) -> bool:
         for contract in universe:
@@ -108,12 +111,6 @@ class TradingCore:
             self.sampler.onTick(contractId, price)
 
     def _onTargetPosition(self, conId, targetPos, confidence, timestamp) -> None:
-        age = self.clock.timestamp() - timestamp
-        if age > config.maxSignalAge:
-            log.warning("Signal %s rejected: %ds old (limit %ds)",
-                        logSetup.name(conId), age, config.maxSignalAge)
-            return
-
         assumed = (self.state.inventory.get(conId, 0)
                    + self.state.pending_inventory.get(conId, 0))
         delta = targetPos - assumed
@@ -140,6 +137,23 @@ class TradingCore:
             if not math.isnan(px):
                 estPrice = px
 
+        reducing = abs(assumed + (qty if action == "BUY" else -qty)) < abs(assumed)
+        room = self.gate.maxQtyToPositionCap(conId, assumed, action, estPrice)
+        if qty > room:
+            qty = room
+
+        if qty > 0 and not reducing and not self.gate.meetsMinimum(qty):
+            qty = 0
+
+        if qty <= 0:
+            if conId not in self._atCap:
+                self._atCap.add(conId)
+                log.warning("%s cannot advance toward target %d: holding %d "
+                            "(position cap or minimum order size)",
+                            logSetup.name(conId), targetPos, assumed)
+            return
+        self._atCap.discard(conId)
+
         sliced = False
         maxQty = self.gate.maxQtyFor(conId, estPrice)
         if maxQty and qty > maxQty:
@@ -161,19 +175,23 @@ class TradingCore:
         log.error("Rejected %s order %s (%s %d) — suppressing new orders for %ds",
                   logSetup.name(contractId), orderId, action, qty, config.rejectCooldown)
 
-    def _onFill(self, conId, action, qty, price, commission=0.0) -> None:
+    def _onCommission(self, conId, amount, currency) -> None:
+        self.state.applyCommission(amount, currency)
+
+    def _onFill(self, conId, action, qty, price) -> None:
         self._blocked.pop(conId, None)
-        self.state.applyFill(conId, action, qty, price, commission)
+        self.state.applyFill(conId, action, qty, price)
         position = self.state.inventory.get(conId, 0)
         equity   = self.state.equity()
         log.info("Fill %s: %s %d @ %.5f, position now %d, equity %s",
                  logSetup.name(conId), action, qty, price, position, f"{equity:,.0f}")
         if self.recorder:
             self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
-                               action, qty, price, position, equity, commission)
+                               action, qty, price, position, equity,
+                               self._quoteRate(conId))
 
-    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty, commission=0.0) -> None:
-        self.state.applyFill(conId, action, filledQty, avgPrice, commission)
+    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty) -> None:
+        self.state.applyFill(conId, action, filledQty, avgPrice)
         position = self.state.inventory.get(conId, 0)
         log.info("Partial fill %s: %s %d of %d @ %.5f, position now %d",
                  logSetup.name(conId), action, filledQty, filledQty + remainingQty,
@@ -181,7 +199,7 @@ class TradingCore:
         if self.recorder:
             self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
                                action, filledQty, avgPrice, position, self.state.equity(),
-                               commission)
+                               self._quoteRate(conId))
 
     def summary(self) -> str:
         open_pos = {logSetup.name(c): q for c, q in self.state.inventory.items() if q}
@@ -203,3 +221,20 @@ class TradingCore:
 
     def symbols(self) -> dict:
         return {int(c.conId): f"{c.symbol}{c.currency}" for c in self.registry.getAll()}
+
+    def _quoteRate(self, conId) -> float:
+        rate = self.state.fx.usdRate(self.state.fx.quoteOf(conId))
+        return float(rate) if rate else 0.0
+
+    def quoteCurrencies(self) -> dict:
+        return {int(c.conId): self.state.fx.quoteOf(c.conId)
+                for c in self.registry.getAll()}
+
+    def quoteRates(self) -> dict:
+        out = {}
+        for c in self.registry.getAll():
+            ccy  = self.state.fx.quoteOf(c.conId)
+            rate = self.state.fx.usdRate(ccy)
+            if rate is not None:
+                out[ccy] = float(rate)
+        return out

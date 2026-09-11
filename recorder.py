@@ -11,7 +11,7 @@ FILLS_FILE  = "fills.csv"
 EQUITY_FILE = "equity.parquet"
 META_FILE   = "meta.json"
 
-FILL_HEADER = ["time", "conId", "symbol", "action", "qty", "price", "commission", "position", "equity"]
+FILL_HEADER = ["time", "conId", "symbol", "action", "qty", "price", "position", "equity", "quoteRate"]
 
 
 def _epoch(ts) -> int:
@@ -40,10 +40,10 @@ class Recorder:
         self.fills   = 0
 
     def fill(self, ts, conId, symbol, action, qty, price, position, equity,
-             commission=0.0) -> None:
+             quoteRate=1.0) -> None:
         self._fillWriter.writerow([_epoch(ts), int(conId), symbol, action,
-                                   int(qty), f"{price:.8f}", f"{commission:.4f}",
-                                   int(position), f"{equity:.4f}"])
+                                   int(qty), f"{price:.8f}", int(position),
+                                   f"{equity:.4f}", f"{quoteRate:.10f}"])
         self.fills += 1
         if self._flush:
             self._fillFile.flush()
