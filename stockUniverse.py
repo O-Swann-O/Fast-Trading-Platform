@@ -351,7 +351,7 @@ universe = [
     (Stock("ODFL", "SMART", "USD"), 272667),
     (Stock("OMC", "SMART", "USD"), 10811),
     (Stock("ON", "SMART", "USD"), 8677881),
-    (Stock("OKE", "SMART", "USD"), 10794),
+    (Stock("OKE", "SMART", "USD"), 921971937),
     (Stock("ORCL", "SMART", "USD"), 272800),
     (Stock("OTIS", "SMART", "USD"), 410755402),
     (Stock("PCAR", "SMART", "USD"), 272992),

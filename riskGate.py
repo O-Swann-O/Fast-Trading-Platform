@@ -19,17 +19,39 @@ class RiskGate:
         self.minFreeMargin       = minFreeMargin
         self.maxTickJump         = maxTickJump
         self._lastPrices         = {}
+        self._pendingJump        = {}
 
     def validateTick(self, contractId: int, price: float) -> bool:
         lastPrice = self._lastPrices.get(contractId)
-        self._lastPrices[contractId] = price
-        if lastPrice is not None and lastPrice > 0:
-            jump = abs(price - lastPrice) / lastPrice
-            if jump > self.maxTickJump:
-                log.warning("Tick rejected %s: jump %.2f%% exceeds %.2f%%",
-                            logSetup.name(contractId), jump * 100, self.maxTickJump * 100)
-                return False
-        return True
+        if lastPrice is None or lastPrice <= 0:
+            self._lastPrices[contractId] = price
+            self._pendingJump.pop(contractId, None)
+            return True
+
+        if abs(price - lastPrice) / lastPrice <= self.maxTickJump:
+            self._lastPrices[contractId] = price
+            self._pendingJump.pop(contractId, None)
+            return True
+
+        candidate = self._pendingJump.get(contractId)
+        if candidate and abs(price - candidate) / candidate <= self.maxTickJump:
+            log.warning("Level shift confirmed %s: %.5f -> %.5f, accepting",
+                        logSetup.name(contractId), lastPrice, price)
+            self._lastPrices[contractId] = price
+            self._pendingJump.pop(contractId, None)
+            return True
+
+        self._pendingJump[contractId] = price
+        log.warning("Tick rejected %s: jump %.2f%% exceeds %.2f%%",
+                    logSetup.name(contractId), abs(price - lastPrice) / lastPrice * 100,
+                    self.maxTickJump * 100)
+        return False
+
+    def maxQtyFor(self, contractId: int, estimatedPrice: float) -> int:
+        unit = self._state.estNotionalUSD(contractId, 1, estimatedPrice)
+        if unit <= 0:
+            return 0
+        return int(self.maxOrderNotional / unit)
 
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:
         if self.killSwitchFile and os.path.exists(self.killSwitchFile):
@@ -61,6 +83,10 @@ class RiskGate:
         currentPos = (self._state.inventory.get(contractId, 0)
                       + self._state.pending_inventory.get(contractId, 0))
         newPos = currentPos + (qty if action == "BUY" else -qty)
+
+        reducing = abs(newPos) < abs(currentPos) and newPos * currentPos >= 0
+        if reducing:
+            return True
 
         newNotional = self._state.estNotionalUSD(contractId, abs(newPos), estimatedPrice)
         if newNotional > self.maxPositionNotional:

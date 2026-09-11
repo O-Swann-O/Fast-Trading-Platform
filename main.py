@@ -63,6 +63,7 @@ async def onConnected():
     _seedingDone = True
     log.info("Account subscriptions done. Subscribing market data...")
     core.recorder = recorder
+    core.orders.onUnresolved = reconciler.auditNow
     core.start()
     reconciler.auditNow()
     core.sampler.start()

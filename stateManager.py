@@ -12,7 +12,9 @@ class StateManager:
         self.inventory         = {}
         self.pending_inventory = {}
         self.reservedMargin    = 0.0
+        self.commission        = 0.0
         self.fills             = 0
+        self._reserved         = {}
 
     def registerInstrument(self, conId: int, base: str, quote: str) -> None:
         self.fx.registerInstrument(conId, base, quote)
@@ -66,18 +68,27 @@ class StateManager:
     def onAccepted(self, conId, action, qty, estPrice) -> None:
         signed = qty if action == "BUY" else -qty
         self.pending_inventory[conId] = self.pending_inventory.get(conId, 0) + signed
-        self.reservedMargin += self.fx.estNotionalUSD(conId, qty, estPrice) * self.marginRate
+        amount = self.fx.estNotionalUSD(conId, qty, estPrice) * self.marginRate
+        self._reserved.setdefault(conId, []).append(amount)
+        self.reservedMargin += amount
 
     def releasePending(self, conId, action, qty, estPrice) -> None:
         signed = qty if action == "BUY" else -qty
         self.pending_inventory[conId] = self.pending_inventory.get(conId, 0) - signed
-        self.reservedMargin -= self.fx.estNotionalUSD(conId, qty, estPrice) * self.marginRate
+        queue  = self._reserved.get(conId)
+        amount = queue.pop(0) if queue else 0.0
+        self.reservedMargin -= amount
+        if not any(self._reserved.values()):
+            self.reservedMargin = 0.0
 
-    def applyFill(self, conId, action, qty, price) -> None:
+    def applyFill(self, conId, action, qty, price, commission=0.0, commissionCcy="USD") -> None:
         quote  = self.fx.quoteOf(conId)
         signed = qty if action == "BUY" else -qty
         self.inventory[conId] = self.inventory.get(conId, 0) + signed
         self.cashBy[quote]    = self.cashBy.get(quote, 0.0) - signed * price
+        if commission:
+            self.cashBy[commissionCcy] = self.cashBy.get(commissionCcy, 0.0) - commission
+            self.commission += commission
         self.fills += 1
 
     def reconcilePosition(self, conId: int, qty: int) -> None:

@@ -36,6 +36,7 @@ def loadRun(runDir: str):
                     "action":   row["action"],
                     "qty":      int(row["qty"]),
                     "price":    float(row["price"]),
+                    "commission": float(row.get("commission") or 0.0),
                     "position": int(row["position"]),
                     "equity":   float(row["equity"]),
                 })
@@ -114,7 +115,7 @@ def equityStats(times, values) -> dict:
 
 def tradeStats(fills, marks) -> dict:
     positions, avgCost, realised = {}, {}, {}
-    volume, roundTrips = 0.0, []
+    volume, roundTrips, commission = 0.0, [], 0.0
     symbols = {}
 
     for f in fills:
@@ -123,6 +124,7 @@ def tradeStats(fills, marks) -> dict:
         q = f["qty"] if f["action"] == "BUY" else -f["qty"]
         x = f["price"]
         volume += abs(q) * x
+        commission += f.get("commission", 0.0)
 
         p = positions.get(cid, 0)
         c = avgCost.get(cid, 0.0)
@@ -170,6 +172,7 @@ def tradeStats(fills, marks) -> dict:
         "avgWin":        (sum(wins) / len(wins)) if wins else 0.0,
         "avgLoss":       (sum(losses) / len(losses)) if losses else 0.0,
         "realisedTotal": sum(realised.values()),
+        "commission":    commission,
         "openPositions": {c: p for c, p in positions.items() if p},
         "perInstrument": perInstrument,
     }
@@ -212,6 +215,9 @@ def printReport(meta, eq, tr) -> None:
     print(f"  fills             {tr['fills']:>16,}")
     print(f"  round trips       {tr['roundTrips']:>16,}")
     print(f"  traded volume     {tr['volume']:>16,.0f}")
+    print(f"  commission        {tr['commission']:>16,.2f}")
+    net = tr['realisedTotal'] - tr['commission']
+    print(f"  realised net      {net:>16,.2f}  (gross {tr['realisedTotal']:,.2f})")
     if tr["roundTrips"]:
         print(f"  win rate          {tr['winRate'] * 100:>15.1f}%")
         print(f"  avg win / loss    {tr['avgWin']:>10,.2f} / {tr['avgLoss']:,.2f}")
@@ -324,6 +330,7 @@ def writeHtml(path, meta, eq, tr, times, values) -> str:
         row("round trips", f"{tr['roundTrips']:,}"),
         row("win rate", f"{tr['winRate']*100:.1f}%") if tr["roundTrips"] else "",
         row("traded volume", f"{tr['volume']:,.0f}"),
+        row("commission", f"{tr['commission']:,.2f}"),
     ]
 
     html = f"""<!DOCTYPE html>
@@ -464,6 +471,7 @@ def _indexPanel(r, openFirst=False):
         row("round trips", f"{tr['roundTrips']:,}"),
         row("win rate", f"{tr['winRate']*100:.1f}%") if tr["roundTrips"] else "",
         row("traded volume", f"{tr['volume']:,.0f}"),
+        row("commission", f"{tr['commission']:,.2f}"),
         row("source", meta.get("source", "")),
         row("instruments", meta.get("instruments", "")),
     ])

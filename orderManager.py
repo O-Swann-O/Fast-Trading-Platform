@@ -5,6 +5,23 @@ from ib_async import MarketOrder, LimitOrder, StopOrder, StopLimitOrder
 
 log = logging.getLogger(__name__)
 
+
+def _commissionOf(trade) -> float:
+    total = 0.0
+    for f in getattr(trade, "fills", None) or []:
+        report = getattr(f, "commissionReport", None)
+        if report is not None:
+            try:
+                total += float(getattr(report, "commission", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+    if total:
+        return total
+    try:
+        return float(getattr(trade, "commission", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
 fillTimeout = 30
 cancelWait  = 2
 
@@ -22,6 +39,7 @@ class OrderManager:
         self.onCancelled = None
         self.onRejected  = None
         self.onReleased  = None
+        self.onUnresolved = None
 
     @property
     def pending(self) -> bool:
@@ -135,6 +153,7 @@ class OrderManager:
                         trade.order.action,
                         int(trade.orderStatus.filled),
                         float(trade.orderStatus.avgFillPrice),
+                        _commissionOf(trade),
                     )
                 return
 
@@ -147,6 +166,7 @@ class OrderManager:
                         filled,
                         float(trade.orderStatus.avgFillPrice),
                         int(requestedQty) - filled,
+                        _commissionOf(trade),
                     )
                 elif self.onCancelled:
                     self.onCancelled(contractId, orderId, trade.order.action, requestedQty, estPrice)
@@ -158,23 +178,37 @@ class OrderManager:
                 return
 
         except asyncio.TimeoutError:
+            log.warning("Order %s not terminal after %ds — cancelling.", orderId, fillTimeout)
             try:
                 self._ib.cancelOrder(trade.order)
             except Exception as e:
                 log.warning("Timeout-cancel failed for order %s: %s", orderId, e)
-            await asyncio.sleep(cancelWait)
+
+            resolved = True
+            try:
+                await asyncio.wait_for(event.wait(), timeout=cancelWait)
+            except asyncio.TimeoutError:
+                resolved = False
 
             filled = int(trade.orderStatus.filled)
-            if filled > 0 and self.onPartial:
-                self.onPartial(
-                    contractId,
-                    trade.order.action,
-                    filled,
-                    float(trade.orderStatus.avgFillPrice),
-                    int(requestedQty) - filled,
-                )
+            if trade.orderStatus.status == "Filled" and self.onFill:
+                self.onFill(contractId, trade.order.action, filled,
+                            float(trade.orderStatus.avgFillPrice), _commissionOf(trade))
+            elif filled > 0 and self.onPartial:
+                self.onPartial(contractId, trade.order.action, filled,
+                               float(trade.orderStatus.avgFillPrice),
+                               int(requestedQty) - filled, _commissionOf(trade))
             elif self.onCancelled:
                 self.onCancelled(contractId, orderId, trade.order.action, requestedQty, estPrice)
+
+            if not resolved:
+                log.error("Order %s final state unknown after cancel; "
+                          "requesting reconciliation.", orderId)
+                if self.onUnresolved:
+                    try:
+                        self.onUnresolved()
+                    except Exception as e:
+                        log.error("Unresolved-order callback failed: %s", e)
 
     def _onOrderStatus(self, trade):
         status = trade.orderStatus.status

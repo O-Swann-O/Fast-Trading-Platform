@@ -19,7 +19,7 @@ class RingBufferSource(SignalSource):
 
     def _reset(self, conIds: np.ndarray) -> None:
         self._keys  = conIds.astype(np.uint32).copy()
-        self._buf   = np.full((conIds.size, self.lookback), np.nan, dtype=np.float32)
+        self._buf   = np.full((conIds.size, self.lookback), np.nan, dtype=np.float64)
         self._head  = 0
         self._count = 0
 
@@ -31,7 +31,7 @@ class RingBufferSource(SignalSource):
                     or not np.array_equal(self._keys, conIds.astype(np.uint32))):
                 self._reset(conIds)
             self._lastIds = conIds
-        prices = np.asarray(prices, dtype=np.float32)
+        prices = np.asarray(prices, dtype=np.float64)
 
         self._buf[:, self._head] = prices
         self._head  = (self._head + 1) % self.lookback

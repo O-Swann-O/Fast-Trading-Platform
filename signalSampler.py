@@ -24,7 +24,7 @@ class SignalSampler:
 
         n = self._conIds.size
         self._index      = {int(cid): i for i, cid in enumerate(self._conIds)}
-        self._latestMid  = np.full(n, np.nan, dtype=np.float32)
+        self._latestMid  = np.full(n, np.nan, dtype=np.float64)
         self._lastUpdate = np.full(n, -np.inf)
         self._nextSample = None
         self._epochOf    = None

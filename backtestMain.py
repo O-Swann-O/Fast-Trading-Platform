@@ -50,8 +50,11 @@ def build(source: str) -> None:
     fx      = FxRates()
     state   = StateManager(fx, config.marginRate)
     sim     = SimBroker(
-        conIdMap   = {f"{c.symbol}{c.currency}": cid for c, cid in universe},
-        halfSpread = halfSpread,
+        conIdMap      = {f"{c.symbol}{c.currency}": cid for c, cid in universe},
+        halfSpread    = halfSpread,
+        commissionBps = bt.commissionBps,
+        commissionMin = bt.commissionMin,
+        notionalUSD   = state.estNotionalUSD,
     )
     core    = TradingCore(sim, clock, makeSignalSource(), session, state,
                           sampleInterval=profile["sampleInterval"])
@@ -82,6 +85,7 @@ def _report():
     print("\n================ BACKTEST RESULT ================")
     print(f"  equity samples : {e['n']:,}")
     print(f"  fills          : {state.fills:,}")
+    print(f"  commission     : {state.commission:,.2f}")
     print(f"  start equity   : {start:,.2f}")
     print(f"  end equity     : {end:,.2f}")
     print(f"  total return   : {(end/start - 1)*100:+.3f}%")

@@ -48,6 +48,9 @@ universe = [
 
 halfSpread = {cid: 0.0 for _, cid in universe}
 
+commissionBps = 0.20
+commissionMin = 2.00
+
 dataRoot     = os.path.join(_HERE, "ticks")
 ibkrDataRoot = os.path.join(_HERE, "ticks_ibkr")
 

@@ -13,10 +13,11 @@ class _Status:
 
 
 class _Trade:
-    __slots__ = ["order", "orderStatus"]
+    __slots__ = ["order", "orderStatus", "commission"]
     def __init__(self, order):
         self.order       = order
         self.orderStatus = _Status()
+        self.commission  = 0.0
 
 
 class _Ticker:
@@ -31,9 +32,13 @@ class _Ticker:
 
 class SimBroker:
 
-    def __init__(self, conIdMap, halfSpread):
-        self._conIdMap   = conIdMap
-        self._halfSpread = halfSpread
+    def __init__(self, conIdMap, halfSpread, commissionBps=0.0,
+                 commissionMin=0.0, notionalUSD=None):
+        self._conIdMap      = conIdMap
+        self._halfSpread    = halfSpread
+        self._commissionBps = commissionBps
+        self._commissionMin = commissionMin
+        self._notionalUSD   = notionalUSD
         self.orderStatusEvent    = Event("orderStatusEvent")
         self.pendingTickersEvent = Event("pendingTickersEvent")
         self._contracts = {}
@@ -83,6 +88,15 @@ class SimBroker:
             mid = (bid + ask) * 0.5
             self.pendingTickersEvent.emit([_Ticker(contract, mid, ts)])
 
+    def _commission(self, conId, qty, price):
+        if self._commissionBps <= 0 and self._commissionMin <= 0:
+            return 0.0
+        if self._notionalUSD is not None:
+            notional = self._notionalUSD(conId, qty, price)
+        else:
+            notional = abs(qty) * price
+        return max(self._commissionMin, notional * self._commissionBps / 10_000.0)
+
     def _match(self, conId, bid, ask):
         if not self._open:
             return
@@ -96,5 +110,6 @@ class SimBroker:
             trade.orderStatus.status       = "Filled"
             trade.orderStatus.filled       = qty
             trade.orderStatus.avgFillPrice = fill
+            trade.commission               = self._commission(conId, qty, fill)
             self._open.pop(orderId, None)
             self.orderStatusEvent.emit(trade)

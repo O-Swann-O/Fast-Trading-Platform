@@ -140,8 +140,17 @@ class TradingCore:
             if not math.isnan(px):
                 estPrice = px
 
-        log.info("Signal %s: target %d -> %s %d (alpha %.2f)",
-                 logSetup.name(conId), targetPos, action, qty, confidence)
+        sliced = False
+        maxQty = self.gate.maxQtyFor(conId, estPrice)
+        if maxQty and qty > maxQty:
+            qty, sliced = maxQty, True
+
+        if sliced:
+            log.info("Signal %s: target %d -> %s %d of %d (order cap, alpha %.2f)",
+                     logSetup.name(conId), targetPos, action, qty, abs(delta), confidence)
+        else:
+            log.info("Signal %s: target %d -> %s %d (alpha %.2f)",
+                     logSetup.name(conId), targetPos, action, qty, confidence)
         self.orders.submitMarket(conId, contract, action, qty, estPrice)
 
     def _onCancelled(self, contractId, orderId, action, qty, estPrice) -> None:
@@ -152,26 +161,27 @@ class TradingCore:
         log.error("Rejected %s order %s (%s %d) — suppressing new orders for %ds",
                   logSetup.name(contractId), orderId, action, qty, config.rejectCooldown)
 
-    def _onFill(self, conId, action, qty, price) -> None:
+    def _onFill(self, conId, action, qty, price, commission=0.0) -> None:
         self._blocked.pop(conId, None)
-        self.state.applyFill(conId, action, qty, price)
+        self.state.applyFill(conId, action, qty, price, commission)
         position = self.state.inventory.get(conId, 0)
         equity   = self.state.equity()
         log.info("Fill %s: %s %d @ %.5f, position now %d, equity %s",
                  logSetup.name(conId), action, qty, price, position, f"{equity:,.0f}")
         if self.recorder:
             self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
-                               action, qty, price, position, equity)
+                               action, qty, price, position, equity, commission)
 
-    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty) -> None:
-        self.state.applyFill(conId, action, filledQty, avgPrice)
+    def _onPartial(self, conId, action, filledQty, avgPrice, remainingQty, commission=0.0) -> None:
+        self.state.applyFill(conId, action, filledQty, avgPrice, commission)
         position = self.state.inventory.get(conId, 0)
         log.info("Partial fill %s: %s %d of %d @ %.5f, position now %d",
                  logSetup.name(conId), action, filledQty, filledQty + remainingQty,
                  avgPrice, position)
         if self.recorder:
             self.recorder.fill(self.clock.now(), conId, logSetup.name(conId),
-                               action, filledQty, avgPrice, position, self.state.equity())
+                               action, filledQty, avgPrice, position, self.state.equity(),
+                               commission)
 
     def summary(self) -> str:
         open_pos = {logSetup.name(c): q for c, q in self.state.inventory.items() if q}
@@ -182,10 +192,11 @@ class TradingCore:
                     f"fills {self.state.fills}   {pos}")
         excluded = self.state.unconvertibleCurrencies()
         note = f" (excl {', '.join(excluded)})" if excluded else ""
+        comm = f"   commission {self.state.commission:,.0f}" if self.state.commission else ""
         return (f"equity {self.state.equity():,.0f}{note}   "
                 f"gross {self.state.grossNotionalUSD():,.0f}   "
                 f"free margin {self.state.freeMarginUSD():,.0f}   "
-                f"fills {self.state.fills}   {pos}")
+                f"fills {self.state.fills}{comm}   {pos}")
 
     def marks(self) -> dict:
         return {int(c): float(p) for c, p in self.state.fx._prices.items()}
