@@ -22,6 +22,8 @@ class RiskGate:
         self.maxTickJump         = maxTickJump
         self._lastPrices         = {}
         self._pendingJump        = {}
+        self._blockReason        = {}   # contractId -> last reason logged
+        self._blockCount         = {}   # contractId -> repeats suppressed since
 
     def validateTick(self, contractId: int, price: float) -> bool:
         lastPrice = self._lastPrices.get(contractId)
@@ -69,32 +71,47 @@ class RiskGate:
             return max(0, maxUnits - abs(currentPos))
         return abs(currentPos) + maxUnits
 
+    def _deny(self, contractId, reason, *args) -> bool:
+        """Log a block once. Identical repeats are counted, not printed: a wedged
+        book re-blocks every instrument on every sample, which is hundreds of
+        thousands of lines a day and slows a backtest to a crawl."""
+        if self._blockReason.get(contractId) == reason:
+            self._blockCount[contractId] = self._blockCount.get(contractId, 0) + 1
+            log.debug(reason, *args)
+            return False
+        self._blockReason[contractId] = reason
+        self._blockCount[contractId]  = 0
+        log.warning(reason, *args)
+        return False
+
+    def _allow(self, contractId) -> bool:
+        n = self._blockCount.pop(contractId, None)
+        if self._blockReason.pop(contractId, None) is not None and n:
+            log.info("%s clear after %d suppressed block(s)", logSetup.name(contractId), n)
+        return True
+
     def allowTrade(self, contractId: int, action: str, qty: int, estimatedPrice: float = 0.0) -> bool:
         if self.killSwitchFile and os.path.exists(self.killSwitchFile):
-            log.error("Blocked: kill switch file present (%s)", self.killSwitchFile)
-            return False
+            return self._deny(contractId, "Blocked: kill switch file present (%s)",
+                              self.killSwitchFile)
 
         if not self._session.isActive:
-            log.warning("Blocked: market session closed")
-            return False
+            return self._deny(contractId, "Blocked: market session closed")
 
         if qty <= 0:
-            log.warning("Blocked: invalid quantity %d", qty)
-            return False
+            return self._deny(contractId, "Blocked: invalid quantity %d", qty)
 
         if action not in ("BUY", "SELL"):
-            log.warning("Blocked: unknown action %s", action)
-            return False
+            return self._deny(contractId, "Blocked: unknown action %s", action)
 
         orderNotional = self._state.estNotionalUSD(contractId, qty, estimatedPrice)
         if orderNotional <= 0:
-            log.warning("Blocked %s: cannot price order notional", logSetup.name(contractId))
-            return False
+            return self._deny(contractId, "Blocked %s: cannot price order notional",
+                              logSetup.name(contractId))
 
         if orderNotional > self.maxOrderNotional:
-            log.warning("Blocked %s: order notional %.0f exceeds %.0f", logSetup.name(contractId),
-                        orderNotional, self.maxOrderNotional)
-            return False
+            return self._deny(contractId, "Blocked %s: order notional %.0f exceeds %.0f", logSetup.name(contractId),
+                              orderNotional, self.maxOrderNotional)
 
         currentPos = (self._state.inventory.get(contractId, 0)
                       + self._state.pending_inventory.get(contractId, 0))
@@ -102,20 +119,20 @@ class RiskGate:
 
         reducing = abs(newPos) < abs(currentPos) and newPos * currentPos >= 0
         if reducing:
-            return True
+            return self._allow(contractId)
 
         newNotional = self._state.estNotionalUSD(contractId, abs(newPos), estimatedPrice)
         if newNotional > self.maxPositionNotional:
-            log.warning("Blocked %s: post-trade notional %.0f exceeds %.0f", logSetup.name(contractId),
-                        newNotional, self.maxPositionNotional)
-            return False
+            return self._deny(contractId, "Blocked %s: post-trade notional %.0f exceeds %.0f", logSetup.name(contractId),
+                              newNotional, self.maxPositionNotional)
 
         curNotional = self._state.estNotionalUSD(contractId, abs(currentPos), estimatedPrice)
         marginDelta = (newNotional - curNotional) * self._state.marginRate
         freeMargin  = self._state.freeMarginUSD()
         if freeMargin - max(marginDelta, 0.0) < self.minFreeMargin:
-            log.warning("Blocked %s: free margin %.0f insufficient (need %.0f + %.0f floor)", logSetup.name(contractId),
-                        freeMargin, max(marginDelta, 0.0), self.minFreeMargin)
-            return False
+            return self._deny(contractId,
+                              "Blocked %s: free margin %.0f insufficient (need %.0f + %.0f floor)",
+                              logSetup.name(contractId), freeMargin, max(marginDelta, 0.0),
+                              self.minFreeMargin)
 
-        return True
+        return self._allow(contractId)

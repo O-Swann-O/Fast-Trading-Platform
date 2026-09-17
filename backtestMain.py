@@ -15,6 +15,7 @@ from sessionManager import SessionManager
 from fxRates import FxRates
 from stateManager import StateManager
 from signalSource import RingBufferSource
+from myStrategy import MyStrategy
 from tradingCore import TradingCore
 from simBroker import SimBroker
 import barReplay
@@ -36,7 +37,7 @@ _equity    = {"n": 0, "first": None, "last": None, "peak": None, "maxdd": 0.0}
 
 
 def makeSignalSource():
-    return RingBufferSource(config.signalLookback)
+    return MyStrategy()
 
 
 def build(source: str) -> None:
@@ -92,8 +93,35 @@ def _report():
     print(f"  end equity     : {end:,.2f}")
     print(f"  total return   : {(end/start - 1)*100:+.3f}%")
     print(f"  max drawdown   : {e['maxdd']*100:.3f}%")
-    print("  full statistics: python analyze.py")
     print("=================================================")
+
+
+def _publish(runDir):
+    """Write this run's report and refresh the index. Never lets a reporting
+    failure cost a completed run: the data on disk is already safe."""
+    try:
+        import analyze
+    except Exception as e:
+        log.warning("Report skipped (analyze.py unavailable): %s", e)
+        return
+    resultsDir = os.path.dirname(os.path.normpath(runDir))
+    try:
+        meta, times, values, fills = analyze.loadRun(runDir)
+        meta.setdefault("name", os.path.basename(os.path.normpath(runDir)))
+        eq = analyze.equityStats(times, values)
+        tr = analyze.tradeStats(fills, meta.get("marks", {}), meta.get("quoteCcy", {}),
+                                meta.get("quoteRates", {}), float(meta.get("commission", 0.0)))
+        report = analyze.writeHtml(os.path.join(runDir, "report.html"),
+                                   meta, eq, tr, times, values)
+        log.info("Report: %s", report)
+    except Exception as e:
+        log.warning("Could not write this run's report: %s", e)
+    try:
+        runs  = analyze.sortRuns(analyze.collectRuns(resultsDir), "date", False)
+        index = analyze.writeIndex(os.path.join(resultsDir, "index.html"), runs, "date")
+        log.info("Index: %s (%d run%s)", index, len(runs), "" if len(runs) == 1 else "s")
+    except Exception as e:
+        log.warning("Could not refresh the run index: %s", e)
 
 
 _SETTLE_SPINS = 5
@@ -277,6 +305,7 @@ def main():
                     "minFreeMargin":       config.minFreeMargin,
                 },
             })
+            _publish(_recorder.outDir)
         pending = asyncio.all_tasks(loop)
         for t in pending:
             t.cancel()

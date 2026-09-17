@@ -159,13 +159,14 @@ class TradingCore:
             return
         self._atCap.discard(conId)
 
+        if self.orders.submitMarket(conId, contract, action, qty, estPrice) is None:
+            return                                   # gate refused; it logged the reason
         if sliced:
             log.info("Signal %s: target %d -> %s %d of %d (order cap, alpha %.2f)",
                      logSetup.name(conId), targetPos, action, qty, abs(delta), confidence)
         else:
             log.info("Signal %s: target %d -> %s %d (alpha %.2f)",
                      logSetup.name(conId), targetPos, action, qty, confidence)
-        self.orders.submitMarket(conId, contract, action, qty, estPrice)
 
     def _cannotAdvance(self, conId, targetPos, assumed, room, cap, estPrice) -> None:
         if conId in self._atCap:

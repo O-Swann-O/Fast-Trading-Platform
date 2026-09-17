@@ -1,11 +1,11 @@
 import os
 import time
 import lzma
+import http.client
 import struct
 import logging
 import argparse
-import urllib.request
-import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta
 
 import backtestConfig as bt
@@ -14,13 +14,53 @@ import dataStore
 log = logging.getLogger(__name__)
 
 BASE     = "https://datafeed.dukascopy.com/datafeed"
-PACE     = 0.75
+PACE     = 0.75            # floor between requests, seconds
+MAX_PACE = 15.0            # ceiling once the feed starts pushing back
+TIMEOUT  = 60              # a throttled request can take 25s+ and still succeed
+ABORT_AFTER = 25           # consecutive failures that mean the feed has cut us off
 RESAMPLE = 1
 _REC     = struct.Struct(">IIIff")
 
 
 class DownloadFailed(Exception):
     pass
+
+
+class FeedUnavailable(Exception):
+    """The feed is refusing us. Stop, rather than burn the range writing nothing."""
+
+
+_conn  = None
+_pace  = PACE
+_host  = urllib.parse.urlsplit(BASE).netloc
+
+
+def _closeConn():
+    global _conn
+    if _conn is not None:
+        try:
+            _conn.close()
+        except Exception:
+            pass
+        _conn = None
+
+
+def _httpGet(path):
+    """One GET on a kept-alive connection. Retries once if the socket went stale."""
+    global _conn
+    for attempt in (0, 1):
+        try:
+            if _conn is None:
+                _conn = http.client.HTTPSConnection(_host, timeout=TIMEOUT)
+            _conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0",
+                                                "Connection": "keep-alive"})
+            r    = _conn.getresponse()
+            body = r.read()
+            return r.status, body
+        except Exception:
+            _closeConn()
+            if attempt:
+                raise
 
 
 def _scale(symbol):
@@ -33,18 +73,30 @@ def _url(symbol, dt):
 
 
 def _download(url):
+    """Bytes for this hour, or None if the feed has no data for it.
+
+    An hour with no data is served as 200 with an empty body, not 404, so an empty
+    return and a missing hour are the same thing to the caller. Raises DownloadFailed
+    only when the server would not answer at all.
+    """
+    global _pace
+    path = urllib.parse.urlsplit(url).path
     last = None
     for attempt in range(4):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.read()
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
+            status, body = _httpGet(path)
+            if status == 404:
+                _pace = max(PACE, _pace * 0.8)
                 return None
-            last = e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last = e
+            if status == 200:
+                _pace = max(PACE, _pace * 0.8)          # ease back off after a good one
+                return body
+            last = f"HTTP {status}"
+            if status in (429, 503, 502, 504):          # explicit back-pressure
+                _pace = min(MAX_PACE, max(_pace * 2.0, 2.0))
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"
+            _pace = min(MAX_PACE, max(_pace * 1.5, 2.0))
         time.sleep(3.0 * (attempt + 1))
     raise DownloadFailed(f"{url}: {last}")
 
@@ -95,6 +147,7 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
     skipped  = 0
     holes    = 0
     dayHoles = 0
+    streak   = 0
     while dt < end:
         if cur_day is None:
             cur_day = dt.date()
@@ -119,11 +172,19 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
 
         try:
             raw = _download(_url(symbol, dt))
+            streak = 0
         except DownloadFailed as e:
-            log.warning("hour unavailable, %s will not be written: %s", dt.date(), e)
+            log.warning("hour refused, %s will not be written: %s", dt.date(), e)
             holes += 1
             dayHoles += 1
+            streak += 1
             raw = None
+            if streak >= ABORT_AFTER:
+                _closeConn()
+                raise FeedUnavailable(
+                    f"{symbol}: {streak} consecutive hours refused, last at {dt}. "
+                    f"The feed is not serving us; nothing further would be written. "
+                    f"Check with Diagnostics/netProbe.py and retry later.")
 
         if raw:
             try:
@@ -134,7 +195,7 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
                 log.warning("decode failed %s: %s", _url(symbol, dt), e)
                 holes += 1
                 dayHoles += 1
-        time.sleep(PACE)
+        time.sleep(_pace)
         dt += timedelta(hours=1)
     if cur_day is not None:
         if dayHoles:
@@ -145,6 +206,9 @@ def fetch_pair(symbol, conId, start, end, skipExisting=True):
     if holes:
         log.warning("%s: %d hour(s) failed; affected days left unwritten for retry.", symbol, holes)
     log.info("Fetched %d rows for %s (%d days already on disk, skipped)", total, symbol, skipped)
+    if total == 0 and skipped == 0 and holes == 0:
+        log.warning("%s: nothing fetched and nothing skipped — the feed served no data "
+                    "for this entire range.", symbol)
 
 
 def run(only=None, skipExisting=True):
@@ -158,10 +222,13 @@ def run(only=None, skipExisting=True):
         targets.append((symbol, conId))
 
     log.info("Fetching %d pair(s): %s", len(targets), ", ".join(s for s, _ in targets))
-    for i, (symbol, conId) in enumerate(targets, 1):
-        log.info("[%d/%d] Dukascopy fetch: %s %s -> %s",
-                 i, len(targets), symbol, bt.fetchStart, bt.fetchEnd)
-        fetch_pair(symbol, conId, start, end, skipExisting)
+    try:
+        for i, (symbol, conId) in enumerate(targets, 1):
+            log.info("[%d/%d] Dukascopy fetch: %s %s -> %s",
+                     i, len(targets), symbol, bt.fetchStart, bt.fetchEnd)
+            fetch_pair(symbol, conId, start, end, skipExisting)
+    finally:
+        _closeConn()
 
 
 if __name__ == "__main__":
@@ -174,4 +241,8 @@ if __name__ == "__main__":
                     help="re-download days already present on disk")
     args = ap.parse_args()
     only = {s.strip().upper() for s in args.pairs.split(",")} if args.pairs else None
-    run(only, skipExisting=not args.refetch)
+    try:
+        run(only, skipExisting=not args.refetch)
+    except FeedUnavailable as e:
+        log.error("ABORTED: %s", e)
+        raise SystemExit(2)

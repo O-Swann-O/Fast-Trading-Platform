@@ -541,7 +541,9 @@ h3 {{ font-weight: 600; font-size: 13px; margin: 22px 0 6px; }}
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run", nargs="?", default=None, help="run directory (default: newest in results/)")
-    ap.add_argument("--html", default=None, help="also write an HTML page to this path")
+    ap.add_argument("--html", nargs="?", const=True, default=None,
+                    help="write an HTML report; defaults to <run>/report.html, "
+                         "or pass a path to write elsewhere")
     ap.add_argument("--index", nargs="?", const=os.path.join("results", "index.html"),
                     default=None, help="build a browsable index of every run in results/")
     ap.add_argument("--sort", default="date",
@@ -576,8 +578,9 @@ def main():
                     meta.get("quoteRates", {}), float(meta.get("commission", 0.0)))
     printReport(meta, eq, tr)
 
-    if args.html:
-        path = writeHtml(args.html, meta, eq, tr, times, values)
+    if args.html is not None:
+        target = os.path.join(runDir, "report.html") if args.html is True else args.html
+        path   = writeHtml(target, meta, eq, tr, times, values)
         print(f"\nWrote {path}")
 
 
