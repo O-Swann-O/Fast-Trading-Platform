@@ -60,7 +60,7 @@ stores = {
 }
 
 profiles = {
-    "dukascopy": {"tradingHoursUTC": None,                        "sampleInterval": 5.0},
+    "dukascopy": {"tradingHoursUTC": None},
     "ibkr":      {"tradingHoursUTC": (time(14, 30), time(21, 0)), "sampleInterval": 300.0,
                   "staleLimit": 600.0},
 }
@@ -85,4 +85,4 @@ fetchStart = "2024-01-01"
 fetchEnd   = "2026-06-16"
 
 testStart  = "2025-01-01"
-testEnd    = "2025-02-01"
+testEnd    = "2025-12-01"

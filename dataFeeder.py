@@ -1,8 +1,9 @@
 class DataFeeder:
 
     def __init__(self, ib):
-        self._ib    = ib
-        self.onTick = None
+        self._ib     = ib
+        self.onTick  = None
+        self.onBatch = None
 
     def start(self):
         self._ib.pendingTickersEvent += self._onTickers
@@ -17,6 +18,8 @@ class DataFeeder:
         self._ib.cancelMktData(contract)
 
     def _onTickers(self, tickers):
+        if self.onBatch:
+            self.onBatch()
         for ticker in tickers:
             if ticker.contract and ticker.contract.conId and self.onTick:
                 self.onTick(ticker.contract.conId, ticker)

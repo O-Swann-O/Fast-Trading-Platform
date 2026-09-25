@@ -14,7 +14,7 @@ from clock import WallClock
 from sessionManager import SessionManager
 from fxRates import FxRates
 from stateManager import StateManager
-from signalSource import RingBufferSource
+from signalSource import RingBufferSource, FixedTargetSource
 from tradingCore import TradingCore
 from recorder import Recorder
 
@@ -27,6 +27,7 @@ fx         = FxRates()
 state      = StateManager(fx, config.marginRate)
 core       = TradingCore(broker.ib, clock, RingBufferSource(config.signalLookback), session, state)
 account    = AccountManager(broker.ib)
+account.onAccountUpdate = fx.onBrokerAccountValue
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
 _seedingDone = False

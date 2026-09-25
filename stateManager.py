@@ -13,6 +13,8 @@ class StateManager:
         self.pending_inventory = {}
         self.reservedMargin    = 0.0
         self.commission        = 0.0
+        self.commissionBy      = {}
+        self._commissionWarned = set()
         self.fills             = 0
         self._reserved         = {}
 
@@ -92,8 +94,15 @@ class StateManager:
         if not amount:
             return
         self.cashBy[currency] = self.cashBy.get(currency, 0.0) - amount
+        self.commissionBy[currency] = self.commissionBy.get(currency, 0.0) + amount
         rate = self.fx.usdRate(currency)
-        self.commission += amount * rate if rate is not None else amount
+        if rate is None:
+            if currency not in self._commissionWarned:
+                self._commissionWarned.add(currency)
+                log.warning("No USD rate for %s; commission charged in %s is held out of "
+                            "the USD total (cash is still debited).", currency, currency)
+            return
+        self.commission += amount * rate
 
     def reconcilePosition(self, conId: int, qty: int) -> None:
         self.inventory[conId] = qty

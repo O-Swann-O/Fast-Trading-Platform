@@ -43,6 +43,7 @@ class TradingCore:
         self._priced  = False
 
         self.feeder.onTick      = self._onTick
+        self.feeder.onBatch     = self._onBatch
         self.orders.onAccepted  = state.onAccepted
         self.orders.onReleased  = state.releasePending
         self.orders.onFill      = self._onFill
@@ -95,6 +96,10 @@ class TradingCore:
 
     async def cancelAll(self) -> None:
         await self.orders.cancelAll()
+
+    def _onBatch(self) -> None:
+        if self.sampler:
+            self.sampler.onBatch()
 
     def _onTick(self, contractId, ticker) -> None:
         price = ticker.marketPrice()

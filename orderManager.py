@@ -7,14 +7,22 @@ log = logging.getLogger(__name__)
 
 fillTimeout = 30
 cancelWait  = 2
-TERMINAL    = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
+orderTif    = "DAY"
+# "Inactive" is deliberately absent: IB uses it for an order that is not working *yet*
+# (blocked by a TWS precautionary setting, held while shares are located). Such an order
+# can still activate and fill, so it is not terminal. It is treated as a rejection in
+# _reportTerminal only once the wait has actually ended on it.
+TERMINAL    = ("Filled", "Cancelled", "ApiCancelled", "Rejected")
 
 
 def _brokerReason(trade) -> str:
-    for entry in reversed(getattr(trade, "log", None) or []):
-        if getattr(entry, "errorCode", 0):
-            return getattr(entry, "message", "") or f"error {entry.errorCode}"
-    return f"status {trade.orderStatus.status}"
+    status = trade.orderStatus.status
+    coded  = [f"{getattr(e, 'errorCode', 0)}: {getattr(e, 'message', '')}"
+              for e in reversed(getattr(trade, "log", None) or [])
+              if getattr(e, "errorCode", 0)]
+    if coded:
+        return f"status {status} — " + "; ".join(coded)
+    return f"status {status}"
 
 
 class OrderManager:
@@ -24,6 +32,7 @@ class OrderManager:
         self._gate        = riskGate
         self._active      = {}
         self._events      = {}
+        self._resolved    = {}
         self._tasks       = set()
         self._cancelRequested = set()
         self.onAccepted   = None
@@ -63,6 +72,8 @@ class OrderManager:
             task.cancel()
 
     def _launch(self, contractId, contract, order, qty, estPrice):
+        if not order.tif:
+            order.tif = orderTif
         started = [False]
         task    = asyncio.create_task(
             self._place(contractId, contract, order, qty, estPrice, started))
@@ -159,6 +170,10 @@ class OrderManager:
             self._active.pop(orderId, None)
             self._events.pop(orderId, None)
             self._cancelRequested.discard(orderId)
+            self._resolved[orderId] = trade.orderStatus.status
+            if len(self._resolved) > 512:
+                for stale in list(self._resolved)[:256]:
+                    del self._resolved[stale]
             self._release(contractId, order.action, requestedQty, estPrice)
 
         if unresolved and self.onUnresolved:
@@ -212,7 +227,7 @@ class OrderManager:
             return
 
         unrequested = orderId not in self._cancelRequested
-        if (status == "Rejected" or unrequested) and self.onRejected:
+        if (status in ("Rejected", "Inactive") or unrequested) and self.onRejected:
             self.onRejected(contractId, orderId, trade.order.action, requestedQty, estPrice,
                             _brokerReason(trade))
             return
@@ -238,8 +253,25 @@ class OrderManager:
 
     def _onOrderStatus(self, trade):
         status = trade.orderStatus.status
-        if status in TERMINAL:
-            orderId = trade.order.orderId
-            event   = self._events.get(orderId)
-            if event and not event.is_set():
+        if status not in TERMINAL:
+            return
+        orderId = trade.order.orderId
+        event   = self._events.get(orderId)
+        if event is not None:
+            if not event.is_set():
                 event.set()
+            return
+
+        # No one is waiting on this order. Either it finished before we started tracking,
+        # or it changed state again after we finished with it — an order we called dead
+        # and IB then filled. IB does not guarantee a callback for every transition, so
+        # this is the backstop: do not guess at the position, reconcile against the broker.
+        if self._resolved.get(orderId) == status:
+            return                                  # duplicate of the status we handled
+        log.error("Terminal status '%s' for untracked order %s (filled %s) — "
+                  "requesting reconciliation.", status, orderId, int(trade.orderStatus.filled))
+        if self.onUnresolved:
+            try:
+                self.onUnresolved()
+            except Exception as e:
+                log.error("Unresolved-order callback failed: %s", e)

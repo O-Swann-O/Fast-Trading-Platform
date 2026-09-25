@@ -1,8 +1,9 @@
-import asyncio
 import logging
 from datetime import timezone
 
 import numpy as np
+
+from signalSource import HOLD
 
 from clock import Clock
 from signalSource import SignalSource
@@ -32,7 +33,6 @@ class SignalSampler:
 
         self.onTargetPosition = None
         self._running = False
-        self._task    = None
 
     def onTick(self, conId: int, price: float) -> None:
         i = self._index.get(conId)
@@ -81,28 +81,31 @@ class SignalSampler:
             for i in range(self._conIds.size):
                 if stale[i]:
                     continue
-                self.onTargetPosition(int(self._conIds[i]), int(targets[i]),
+                target = int(targets[i])
+                if target == HOLD:
+                    continue
+                self.onTargetPosition(int(self._conIds[i]), target,
                                       float(confidences[i]), emitTs)
+
+    def onBatch(self) -> None:
+        """Live trigger. A batch of ticks has arrived: poll the grid before those ticks
+        are applied, which is exactly what backtestMain does at each new tick timestamp.
+        Inert until start() arms it, so observe-only stays observe-only and the backtest
+        (which drives poll() itself) is unaffected."""
+        if not self._running:
+            return
+        try:
+            self.poll()
+        except Exception as e:
+            log.error("Sampler failed: %s", e)
 
     def start(self) -> None:
         if not self._running:
             self._running = True
-            self._task    = asyncio.create_task(self._runLoop())
-            log.info("Sampler started: %d instruments every %.1fs.",
+            log.info("Sampler armed: %d instruments, %.1fs grid, tick-driven.",
                      self._conIds.size, self._interval)
 
     def stop(self) -> None:
         if self._running:
             log.info("Sampler stopped.")
         self._running = False
-        if self._task:
-            self._task.cancel()
-            self._task = None
-
-    async def _runLoop(self) -> None:
-        while self._running:
-            await asyncio.sleep(self._interval)
-            try:
-                self.poll()
-            except Exception as e:
-                log.error("Sampler failed: %s", e)

@@ -58,12 +58,13 @@ def build(source: str) -> None:
         commissionMin = bt.commissionMin,
         notionalUSD   = state.estNotionalUSD,
     )
-    core    = TradingCore(sim, clock, makeSignalSource(), session, state,
-                          sampleInterval=profile["sampleInterval"],
-                          staleLimit=profile.get("staleLimit"))
+    interval = profile.get("sampleInterval", config.sampleInterval)
+    core     = TradingCore(sim, clock, makeSignalSource(), session, state,
+                           sampleInterval=interval,
+                           staleLimit=profile.get("staleLimit"))
 
     log.info("Universe '%s': %d instruments, sampling every %.0fs, stale after %.0fs, hours %s",
-             source, len(universe), profile["sampleInterval"], core._staleLimit,
+             source, len(universe), interval, core._staleLimit,
              profile["tradingHoursUTC"] or "FX week")
 
 

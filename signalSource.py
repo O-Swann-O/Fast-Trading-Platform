@@ -1,5 +1,11 @@
 import numpy as np
 
+# A target of HOLD means "no opinion for this instrument": the core leaves whatever is
+# held alone, exactly as it does for a stale price. It exists because a strategy cannot
+# see its own inventory, so during warm-up — or after a restart — it has no honest way to
+# ask for the position it already has. Returning 0 there would flatten the book.
+HOLD = -2**31
+
 
 class SignalSource:
 
@@ -38,7 +44,7 @@ class RingBufferSource(SignalSource):
         self._count = min(self._count + 1, self.lookback)
 
         n = conIds.size
-        targets     = np.zeros(n, dtype=np.int32)
+        targets     = np.full(n, HOLD, dtype=np.int64)   # a placeholder must never trade
         confidences = np.zeros(n, dtype=np.float32)
         return targets, confidences
 
@@ -57,7 +63,7 @@ class FixedTargetSource(SignalSource):
     def compute(self, conIds: np.ndarray, prices: np.ndarray):
         conIds      = np.asarray(conIds)
         n           = conIds.size
-        targets     = np.zeros(n, dtype=np.int32)
+        targets     = np.full(n, HOLD, dtype=np.int64)   # untouched unless named
         confidences = np.zeros(n, dtype=np.float32)
         for i, cid in enumerate(conIds):
             if int(cid) in self._targets and not np.isnan(prices[i]):
