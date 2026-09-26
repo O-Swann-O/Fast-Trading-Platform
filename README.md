@@ -49,12 +49,17 @@ unbreakable risk and execution firewall for any future mathematical signal gener
 * **`OrderManager`:** Places and tracks orders through to a terminal state. *Coupled directly to the
   Risk Gate so it is physically impossible to place an unchecked order.* A cancellation the system
   did not request is a broker rejection, and suppresses the instrument for `rejectCooldown`.
+  ib_async turns any IB error code it does not class as a warning into a local `Cancelled`, even
+  when the order is still live at IB, so a fill reported after an order was resolved is booked
+  from that report's cumulative quantity and average price.
 * **`ContractRegistry`:** The single source of truth for tradable instruments. Qualifies every asset
   with the exchange at startup to prevent downstream routing rejections.
 * **`SessionManager`:** One implementation, both paths, all UTC. Encodes the FX week as a market
   fact; strategy trading hours are an optional overlay.
-* **`SignalSampler`:** Samples the market on a fixed interval, masks stale instruments, and asks the
-  signal source for target positions.
+* **`SignalSampler`:** Samples the market on a fixed grid of `config.sampleInterval`, masks stale
+  instruments, and asks the signal source for target positions. The grid is polled by ticks, not a
+  timer, in both paths: live polls on each tick batch before applying it, backtest on each new
+  tick timestamp. No ticks, no samples.
 * **`DataFeeder`:** A high-speed pipe passing market ticks from the broker to the core using the
   asset's raw `conId`.
 
@@ -112,7 +117,9 @@ compute(conIds, prices) -> (targets, confidences)
 * **`conIds`** — instrument identifiers, fixed order, stable across calls.
 * **`prices`** — current mid per instrument; `NaN` where the feed has gone stale.
 * **`targets`** — the *absolute desired position* per instrument, in base-currency units.
-  Negative is short, zero is flat.
+  Negative is short, zero is flat, and `signalSource.HOLD` means no opinion: the position is left
+  alone. A source cannot see its inventory, so it returns `HOLD` while warming up; returning zero
+  there liquidates the book on every restart.
 * **`confidences`** — alpha score per instrument, currently informational.
 
 An in-process signal source is called synchronously with fresh prices, so there is no transport

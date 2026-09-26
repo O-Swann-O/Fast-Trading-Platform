@@ -11,16 +11,13 @@ class FxRates:
         self._ccyPair  = {}
         self._baseRate = {}
 
-    def onBrokerAccountValue(self, tag: str, currency: str, value: float) -> None:
-        """Broker-reported rates for currencies no traded pair can reach. IB sends one
-        rate per currency, quoted against the account's base currency, so USD's own entry
-        is what normalises them. The tag arrives as '$LEDGER-ExchangeRate'; the prefix is
-        stripped and BASE skipped exactly as Reconciler does for cash. Absent the tag this
-        stays empty and usdRate falls back to traded pairs alone."""
-        if tag.startswith("$LEDGER-"):
-            tag = tag[len("$LEDGER-"):]
-        if tag == "ExchangeRate" and currency not in ("", "BASE") and value:
-            self._baseRate[currency] = float(value)
+    def setBaseRate(self, currency: str, perBase: float) -> None:
+        """A broker-supplied rate: account-base-currency units per unit of `currency`.
+        Used only for currencies no traded pair reaches, such as the account's own base
+        currency. USD's own entry normalises the rest, so the base need not be known.
+        Never set in a backtest, where usdRate uses traded pairs alone."""
+        if perBase > 0:
+            self._baseRate[currency] = float(perBase)
 
     def _brokerUsdRate(self, ccy: str):
         rate    = self._baseRate.get(ccy)

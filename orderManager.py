@@ -7,12 +7,12 @@ log = logging.getLogger(__name__)
 
 fillTimeout = 30
 cancelWait  = 2
+# Sent explicitly. Left blank, TWS fills it from the order preset and reports that as
+# error 10349, which ib_async (not IB) turns into a 'Cancelled' for an order that is live.
 orderTif    = "DAY"
-# "Inactive" is deliberately absent: IB uses it for an order that is not working *yet*
-# (blocked by a TWS precautionary setting, held while shares are located). Such an order
-# can still activate and fill, so it is not terminal. It is treated as a rejection in
-# _reportTerminal only once the wait has actually ended on it.
-TERMINAL    = ("Filled", "Cancelled", "ApiCancelled", "Rejected")
+# Matches ib_async's own OrderStatus.DoneStates, plus 'Rejected'.
+TERMINAL    = ("Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected")
+_KEEP       = 512      # resolved orders remembered, for fills that arrive after resolution
 
 
 def _brokerReason(trade) -> str:
@@ -170,17 +170,23 @@ class OrderManager:
             self._active.pop(orderId, None)
             self._events.pop(orderId, None)
             self._cancelRequested.discard(orderId)
-            self._resolved[orderId] = trade.orderStatus.status
-            if len(self._resolved) > 512:
-                for stale in list(self._resolved)[:256]:
-                    del self._resolved[stale]
             self._release(contractId, order.action, requestedQty, estPrice)
 
-        if unresolved and self.onUnresolved:
+        if unresolved:
+            self._requestReconcile()
+
+    def _requestReconcile(self) -> None:
+        if self.onUnresolved:
             try:
                 self.onUnresolved()
             except Exception as e:
                 log.error("Unresolved-order callback failed: %s", e)
+
+    def _remember(self, orderId, contractId, action, booked, avgPrice) -> None:
+        self._resolved[orderId] = (contractId, action, booked, avgPrice)
+        if len(self._resolved) > _KEEP:
+            for old in list(self._resolved)[:_KEEP // 2]:
+                del self._resolved[old]
 
     async def _awaitTerminal(self, trade, contractId, requestedQty, estPrice) -> bool:
         orderId = trade.order.orderId
@@ -214,16 +220,16 @@ class OrderManager:
     def _reportTerminal(self, trade, contractId, orderId, requestedQty, estPrice) -> None:
         status = trade.orderStatus.status
         filled = int(trade.orderStatus.filled)
+        avg    = float(trade.orderStatus.avgFillPrice)
+        action = trade.order.action
+        self._remember(orderId, contractId, action, filled, avg)    # what is booked below
 
         if status == "Filled" and self.onFill:
-            self.onFill(contractId, trade.order.action, filled,
-                        float(trade.orderStatus.avgFillPrice))
+            self.onFill(contractId, action, filled, avg)
             return
 
         if filled > 0 and self.onPartial:
-            self.onPartial(contractId, trade.order.action, filled,
-                           float(trade.orderStatus.avgFillPrice),
-                           int(requestedQty) - filled)
+            self.onPartial(contractId, action, filled, avg, int(requestedQty) - filled)
             return
 
         unrequested = orderId not in self._cancelRequested
@@ -262,16 +268,26 @@ class OrderManager:
                 event.set()
             return
 
-        # No one is waiting on this order. Either it finished before we started tracking,
-        # or it changed state again after we finished with it — an order we called dead
-        # and IB then filled. IB does not guarantee a callback for every transition, so
-        # this is the backstop: do not guess at the position, reconcile against the broker.
-        if self._resolved.get(orderId) == status:
-            return                                  # duplicate of the status we handled
-        log.error("Terminal status '%s' for untracked order %s (filled %s) — "
-                  "requesting reconciliation.", status, orderId, int(trade.orderStatus.filled))
-        if self.onUnresolved:
-            try:
-                self.onUnresolved()
-            except Exception as e:
-                log.error("Unresolved-order callback failed: %s", e)
+        # Nobody is waiting on this order any more. ib_async can finish an order locally —
+        # every IB error code it does not class as a warning becomes 'Cancelled' — while it
+        # is still live at IB and fills later. The fill's status carries the order's
+        # cumulative quantity and average price, so book exactly what was not booked.
+        record = self._resolved.get(orderId)
+        if record is None:
+            log.error("Terminal status '%s' for unknown order %s — requesting reconciliation.",
+                      status, orderId)
+            self._requestReconcile()
+            return
+        contractId, action, booked, bookedAvg = record
+        filled = int(trade.orderStatus.filled)
+        if filled <= booked:
+            return                                  # nothing new: a status-only change
+        avg   = float(trade.orderStatus.avgFillPrice)
+        qty   = filled - booked
+        price = (avg * filled - bookedAvg * booked) / qty
+        self._remember(orderId, contractId, action, filled, avg)
+        log.warning("Late fill: order %s was resolved with %d filled, broker now reports %d "
+                    "(status %s); booking %s %d @ %.5f", orderId, booked, filled, status,
+                    action, qty, price)
+        if self.onFill:
+            self.onFill(contractId, action, qty, price)

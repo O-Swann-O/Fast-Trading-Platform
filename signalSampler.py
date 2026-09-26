@@ -3,8 +3,6 @@ from datetime import timezone
 
 import numpy as np
 
-from signalSource import HOLD
-
 from clock import Clock
 from signalSource import SignalSource
 
@@ -81,10 +79,7 @@ class SignalSampler:
             for i in range(self._conIds.size):
                 if stale[i]:
                     continue
-                target = int(targets[i])
-                if target == HOLD:
-                    continue
-                self.onTargetPosition(int(self._conIds[i]), target,
+                self.onTargetPosition(int(self._conIds[i]), int(targets[i]),
                                       float(confidences[i]), emitTs)
 
     def onBatch(self) -> None:

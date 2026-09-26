@@ -27,7 +27,7 @@ fx         = FxRates()
 state      = StateManager(fx, config.marginRate)
 core       = TradingCore(broker.ib, clock, RingBufferSource(config.signalLookback), session, state)
 account    = AccountManager(broker.ib)
-account.onAccountUpdate = fx.onBrokerAccountValue
+account.onExchangeRate = fx.setBaseRate
 reconciler = Reconciler(broker.ib, state, config.reconcileInterval)
 
 _seedingDone = False
@@ -195,6 +195,11 @@ def _checkVersions():
         "FxRates.isRegistered":            hasattr(state.fx, "isRegistered"),
         "TradingCore reject reason":       "reason" in __import__("inspect").signature(core._onRejected).parameters,
         "OrderManager cancel tracking":    hasattr(core.orders, "_cancelRequested"),
+        # Cross-file contracts that fail silently, or dangerously, when one file is stale:
+        "TradingCore honours HOLD":        "HOLD" in TradingCore._onTargetPosition.__code__.co_names,
+        "DataFeeder batch hook":           "onBatch" in type(core.feeder)._onTickers.__code__.co_names,
+        "TradingCore wires batch hook":    getattr(core.feeder, "onBatch", None) is not None,
+        "AccountManager exchange rates":   "onExchangeRate" in AccountManager._onAccountValue.__code__.co_names,
     }
     missing = [name for name, ok in required.items() if not ok]
     if missing:

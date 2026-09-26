@@ -11,6 +11,7 @@ class AccountManager:
         self._account         = ""
         self.onAccountUpdate  = None
         self.onPositionUpdate = None
+        self.onExchangeRate   = None   # (currency, base units per unit of currency)
 
     def start(self) -> None:
         accounts = self._ib.managedAccounts()
@@ -59,13 +60,18 @@ class AccountManager:
         log.info("AccountManager stopped.")
 
     def _onAccountValue(self, value: AccountValue) -> None:
-        if not self.onAccountUpdate:
-            return
         try:
             valFloat = float(value.value)
         except (ValueError, TypeError):
             return
-        self.onAccountUpdate(value.tag, value.currency, valFloat)
+        if self.onAccountUpdate:
+            self.onAccountUpdate(value.tag, value.currency, valFloat)
+        # IB sends one ExchangeRate per ledger currency, as '$LEDGER-ExchangeRate', plus a
+        # BASE row that is always 1. The same prefix convention as Reconciler._tagName.
+        tag = value.tag[len("$LEDGER-"):] if value.tag.startswith("$LEDGER-") else value.tag
+        if (tag == "ExchangeRate" and value.currency not in ("", "BASE")
+                and self.onExchangeRate):
+            self.onExchangeRate(value.currency, valFloat)
 
     def _onPortfolio(self, item: PortfolioItem) -> None:
         self._feedPosition(item.contract, item.position)

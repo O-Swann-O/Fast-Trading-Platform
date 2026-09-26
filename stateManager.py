@@ -13,7 +13,6 @@ class StateManager:
         self.pending_inventory = {}
         self.reservedMargin    = 0.0
         self.commission        = 0.0
-        self.commissionBy      = {}
         self._commissionWarned = set()
         self.fills             = 0
         self._reserved         = {}
@@ -94,7 +93,6 @@ class StateManager:
         if not amount:
             return
         self.cashBy[currency] = self.cashBy.get(currency, 0.0) - amount
-        self.commissionBy[currency] = self.commissionBy.get(currency, 0.0) + amount
         rate = self.fx.usdRate(currency)
         if rate is None:
             if currency not in self._commissionWarned:

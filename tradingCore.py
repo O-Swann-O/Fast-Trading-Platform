@@ -8,6 +8,7 @@ from dataFeeder import DataFeeder
 from orderManager import OrderManager
 from riskGate import RiskGate
 from signalSampler import SignalSampler
+from signalSource import HOLD
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +119,8 @@ class TradingCore:
             self.sampler.onTick(contractId, price)
 
     def _onTargetPosition(self, conId, targetPos, confidence, timestamp) -> None:
+        if targetPos == HOLD:            # "no opinion": leave the position alone
+            return
         assumed = (self.state.inventory.get(conId, 0)
                    + self.state.pending_inventory.get(conId, 0))
         delta = targetPos - assumed

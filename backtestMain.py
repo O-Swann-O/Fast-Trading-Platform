@@ -219,6 +219,7 @@ def _checkVersions():
         "TradingCore staleLimit":          hasattr(core, "_staleLimit"),
         "TradingCore reject reason":       "reason" in inspect.signature(core._onRejected).parameters,
         "OrderManager cancel tracking":    hasattr(core.orders, "_cancelRequested"),
+        "TradingCore honours HOLD":        "HOLD" in TradingCore._onTargetPosition.__code__.co_names,
     }
     missing = [name for name, ok in required.items() if not ok]
     if missing:

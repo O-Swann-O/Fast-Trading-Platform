@@ -14,8 +14,10 @@ The contract, in full:
                  means "no opinion": whatever is held is left alone.
     confidences  float32 array, length n, 0.0 to 1.0. Currently only logged.
 
-Called once every sampleInterval seconds (1s), on the first tick at or after each
-grid point, so no sample fires while the market is shut.
+Called once per config.sampleInterval, live and in backtest alike, on the first tick
+at or after each grid point. With no ticks there are no calls. After a quiet spell
+the missed grid points are called back to back on the next tick, all prices NaN; a
+gap longer than 1,000 intervals (a weekend) collapses into a single call.
 
 Four things that will bite you if you ignore them:
 
@@ -35,12 +37,14 @@ Four things that will bite you if you ignore them:
   * Risk is not your job. RiskGate handles position caps, order caps, minimum
     size, margin and the session. Ask for what you want; it will clip it.
 
-Sizing: minOrderQty is 20,000 units and maxOrderNotional is 25,000 USD, so a
-target under 20,000 units cannot be reached from flat and will be refused.
+Sizing: with config.minOrderQty at 20,000 units and config.maxOrderNotional at
+25,000 USD, a target under 20,000 units cannot be reached from flat, GBP-base pairs
+cannot trade at all (20,000 GBP is more than 25,000 USD), and CHFJPY only while
+20,000 CHF stays under it.
 
-Cost floor: $2.00 per order. On 20,000-25,000 units that is over 1 bp round trip
-for every pair in the universe, and more like 2.5 bp where the base currency is
-cheap. That is commission alone, before spread. Your signal has to beat it.
+Cost floor: $2.00 per order, $4 per round trip. That is 1.6 bp at the 25,000 USD
+order cap, rising to 3.4 bp for a minimum-size NZD-base order. Commission alone,
+before spread. Your signal has to beat it.
 """
 import numpy as np
 
